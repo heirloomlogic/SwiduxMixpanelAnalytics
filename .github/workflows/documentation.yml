@@ -24,12 +24,10 @@ jobs:
         run: |
           swift package --allow-writing-to-directory ./docs \
             generate-documentation \
-            --target SwiduxRevenueCatPaywall \
-            --target SwiduxRevenueCatPaywallUI \
-            --enable-experimental-combined-documentation \
+            --target SwiduxMixpanelAnalytics \
             --disable-indexing \
             --transform-for-static-hosting \
-            --hosting-base-path /SwiduxRevenueCatPaywall \
+            --hosting-base-path /SwiduxMixpanelAnalytics \
             --output-path ./docs
 
       - name: Deploy to GitHub Pages
