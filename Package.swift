@@ -13,7 +13,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/HeirloomLogic/Swidux", branch: "main"),
-        .package(url: "https://github.com/HeirloomLogic/SwiftFormatPlugin", from: "1.6.1"),
+        .package(url: "https://github.com/HeirloomLogic/Persnicket", from: "2.0.0"),
         .package(url: "https://github.com/mixpanel/mixpanel-swift", from: "4.3.0"),
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.5.0"),
     ],
@@ -25,7 +25,7 @@ let package = Package(
                 .product(name: "Mixpanel", package: "mixpanel-swift"),
             ],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
         .testTarget(
@@ -35,7 +35,7 @@ let package = Package(
                 .product(name: "SwiduxAnalytics", package: "Swidux"),
             ],
             plugins: [
-                .plugin(name: "SwiftFormatBuildToolPlugin", package: "SwiftFormatPlugin")
+                .plugin(name: "Persnoop", package: "Persnicket")
             ]
         ),
     ]
