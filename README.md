@@ -5,9 +5,10 @@
 ## Why this package
 
 - **Drop-in `AnalyticsService` conformance.** `MixpanelAnalyticsService` forwards `track` / `identify` / `alias` / `reset` / `flush` to the Mixpanel SDK. Empty property dicts are passed as `nil`; nested arrays and dicts are translated recursively.
-- **Per-instance configuration stays with Mixpanel.** All Mixpanel-specific knobs (token, EU residency, opt-out by default, flush interval, automatic events) are set at `Mixpanel.initialize` time. The service has zero configuration of its own — it wraps whichever `MixpanelInstance` you hand it.
-- **Preview- and test-friendly mock.** `MockMixpanelAnalyticsService` is an actor that records every call and exposes its history (`trackedEvents`, `identifyCalls`, `aliasCalls`, `resetCount`, `flushCount`) for `#expect` assertions. No Mixpanel SDK runtime needed.
-- **Multiple instances supported.** Initialize a `MixpanelInstance` per project and pass each to its own `MixpanelAnalyticsService(instance:)` for fan-out to multiple Mixpanel projects.
+- **The adapter is the configuration boundary.** Pass the token and any Mixpanel knobs (EU residency, opt-out by default, flush interval, automatic events, gzip, super properties) to `MixpanelAnalyticsService.init`. The adapter owns `Mixpanel.initialize` internally so apps never `import Mixpanel`. Swapping to a different analytics provider is a one-import, one-line change.
+- **GDPR controls without re-coupling.** Runtime opt-out / opt-in / logging / geo-by-IP toggles are exposed on the adapter itself (`optOutTracking`, `optInTracking`, `setLoggingEnabled`, `setUseIPAddressForGeoLocation`).
+- **Preview- and test-friendly mock.** `MockMixpanelAnalyticsService` is an actor that records every call and exposes its history (`trackedEvents`, `identifyCalls`, `aliasCalls`, `resetCount`, `flushCount`, `optOutCount`, `optInCalls`, `optedOut`, `loggingEnabled`, `useIPAddressForGeoLocation`) for `#expect` assertions. No Mixpanel SDK runtime needed.
+- **Multiple instances supported.** Pass a unique `instanceName:` to each `MixpanelAnalyticsService` for fan-out to multiple Mixpanel projects. For apps that need to build a `MixpanelInstance` themselves (e.g., `ProxyServerConfig`), `MixpanelAnalyticsService(instance:)` is the documented escape hatch.
 
 ## Installation
 
@@ -25,16 +26,18 @@
 
 ## Quickstart
 
-Initialize Mixpanel at launch, register the analytics plugin with `MixpanelAnalyticsService`, and dispatch events through Swidux:
+Construct the service with your token, register the analytics plugin, and dispatch events through Swidux — no `import Mixpanel` required.
 
 ```swift
-import Mixpanel
 import Swidux
 import SwiduxAnalytics
 import SwiduxMixpanelAnalytics
 
-// 1. App launch
-Mixpanel.initialize(token: "your-mixpanel-token", trackAutomaticEvents: false)
+// 1. Build the service. The adapter owns `Mixpanel.initialize` internally.
+let analyticsService = MixpanelAnalyticsService(
+    token: "your-mixpanel-token",
+    optOutTrackingByDefault: true  // flip with analyticsService.optInTracking(...)
+)
 
 // 2. Plugin registration
 plugins.register(
@@ -42,7 +45,7 @@ plugins.register(
         state: \.analytics,
         action: AppAction.analytics,
         extractAction: { if case .analytics(let a) = $0 { return a }; return nil },
-        service: MixpanelAnalyticsService(),
+        service: analyticsService,
         mapper: analyticsMapper,
         identity: analyticsIdentity
     )
