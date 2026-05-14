@@ -27,28 +27,9 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     private let instance: MixpanelInstance
 
     #if os(macOS)
-    /// Initializes Mixpanel with the given token and wraps the resulting
-    /// instance.
-    ///
-    /// Parameters mirror `Mixpanel.initialize(...)`; the `superProperties` map
-    /// is typed as `[String: AnalyticsValue]` so the app does not need to
-    /// reference `MixpanelType`.
-    ///
-    /// - Parameters:
-    ///   - token: The Mixpanel project token.
-    ///   - flushInterval: Seconds between automatic flushes. Defaults to `60`.
-    ///   - instanceName: A name for this Mixpanel instance, allowing the app
-    ///     to run multiple Mixpanel projects. Defaults to `nil` (main instance).
-    ///   - optOutTrackingByDefault: If `true`, the SDK starts opted out. Flip
-    ///     with ``optInTracking(distinctID:properties:)``. Defaults to `false`.
-    ///   - useUniqueDistinctId: Use a UUID instead of the IDFV as the default
-    ///     distinct ID. Defaults to `false`.
-    ///   - superProperties: Properties attached to every event. Defaults to
-    ///     `nil`.
-    ///   - serverURL: Override the Mixpanel API base URL (e.g. EU residency).
-    ///     Defaults to `nil`.
-    ///   - useGzipCompression: Compress outbound requests with gzip. Defaults
-    ///     to `false`.
+    /// macOS variant of the token initializer. Identical to the non-macOS
+    /// variant except `trackAutomaticEvents` is omitted — the macOS Mixpanel
+    /// SDK does not accept it. See the non-macOS init for parameter docs.
     public init(
         token: String,
         flushInterval: Double = 60,
@@ -65,7 +46,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
             instanceName: instanceName,
             optOutTrackingByDefault: optOutTrackingByDefault,
             useUniqueDistinctId: useUniqueDistinctId,
-            superProperties: superProperties?.toMixpanelProperties(),
+            superProperties: Self.mixpanelSuperProperties(superProperties),
             serverURL: serverURL,
             useGzipCompression: useGzipCompression
         )
@@ -113,12 +94,19 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
             instanceName: instanceName,
             optOutTrackingByDefault: optOutTrackingByDefault,
             useUniqueDistinctId: useUniqueDistinctId,
-            superProperties: superProperties?.toMixpanelProperties(),
+            superProperties: Self.mixpanelSuperProperties(superProperties),
             serverURL: serverURL,
             useGzipCompression: useGzipCompression
         )
     }
     #endif
+
+    private static func mixpanelSuperProperties(
+        _ properties: [String: AnalyticsValue]?
+    ) -> Properties? {
+        guard let properties, !properties.isEmpty else { return nil }
+        return properties.toMixpanelProperties()
+    }
 
     /// Escape hatch for apps that need to construct their own `MixpanelInstance`
     /// (for example, to use `ProxyServerConfig`). Most apps should prefer the
