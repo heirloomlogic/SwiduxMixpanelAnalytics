@@ -1,6 +1,6 @@
 # ``SwiduxMixpanelAnalytics``
 
-Mixpanel adapter for Swidux's `AnalyticsPlugin`. Implements `AnalyticsService` against `Mixpanel.mainInstance()` and ships a recording mock for previews and tests.
+Mixpanel adapter for Swidux's `AnalyticsPlugin`. Owns the Mixpanel SDK on the app's behalf — `MixpanelAnalyticsService(token:)` calls `Mixpanel.initialize` internally so apps never need to `import Mixpanel`. Ships a recording mock for previews and tests.
 
 @Metadata {
     @DisplayName("SwiduxMixpanelAnalytics")
@@ -12,7 +12,7 @@ Mixpanel adapter for Swidux's `AnalyticsPlugin`. Implements `AnalyticsService` a
 
 Two types ship in a single product:
 
-- ``MixpanelAnalyticsService`` — the live `AnalyticsService` conformer that wraps a `MixpanelInstance`.
+- ``MixpanelAnalyticsService`` — the live `AnalyticsService` conformer that constructs and wraps a `MixpanelInstance`.
 - ``MockMixpanelAnalyticsService`` — a recording actor for SwiftUI `#Preview` blocks and Swift Testing suites.
 
 The flow:

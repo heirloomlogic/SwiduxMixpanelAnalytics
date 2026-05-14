@@ -15,15 +15,17 @@ import Testing
 /// async surface returns and the `AnalyticsService` contract holds.
 @Suite("MixpanelAnalyticsService")
 struct MixpanelAnalyticsServiceTests {
-    private static func makeInstance(name: String = #function) -> MixpanelInstance {
+    /// Constructs a service via the public token init, with a unique
+    /// `instanceName` per test so suites can run in parallel.
+    private static func makeService(name: String = #function) -> MixpanelAnalyticsService {
         #if os(macOS)
-        return Mixpanel.initialize(
+        return MixpanelAnalyticsService(
             token: "test-token",
             instanceName: name,
             optOutTrackingByDefault: true
         )
         #else
-        return Mixpanel.initialize(
+        return MixpanelAnalyticsService(
             token: "test-token",
             trackAutomaticEvents: false,
             instanceName: name,
@@ -38,12 +40,12 @@ struct MixpanelAnalyticsServiceTests {
     }
 
     @Test func trackResolvesWithoutThrowing() async {
-        let service = MixpanelAnalyticsService(instance: Self.makeInstance())
+        let service = Self.makeService()
         await service.track(AnalyticsEvent("smoke", ["amount": .int(1)]))
     }
 
     @Test func identifyAliasResetFlushAllResolve() async {
-        let service = MixpanelAnalyticsService(instance: Self.makeInstance())
+        let service = Self.makeService()
         await service.identify(userID: "u1", properties: ["tier": .string("free")])
         await service.alias(newID: "alias-1", previousID: "u1")
         await service.reset()
@@ -51,10 +53,53 @@ struct MixpanelAnalyticsServiceTests {
     }
 
     @Test func flushContinuationResumes() async {
-        let service = MixpanelAnalyticsService(instance: Self.makeInstance())
+        let service = Self.makeService()
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await service.flush() }
             await group.waitForAll()
         }
+    }
+
+    @Test func optOutAndOptInResolve() async {
+        // Mixpanel's opt-out flag is updated on the SDK's internal serial
+        // queue, so `hasOptedOutTracking()` can race the write — state
+        // semantics live in `MockMixpanelAnalyticsServiceTests`. Here we
+        // only verify the calls resolve without throwing.
+        let service = Self.makeService()
+        await service.optInTracking(
+            distinctID: "u2",
+            properties: ["tier": .string("pro")])
+        await service.optOutTracking()
+        _ = await service.hasOptedOutTracking()
+    }
+
+    @Test func setLoggingAndGeoTogglesResolve() async {
+        let service = Self.makeService()
+        await service.setLoggingEnabled(true)
+        await service.setUseIPAddressForGeoLocation(false)
+        await service.setLoggingEnabled(false)
+    }
+
+    /// Escape hatch: an app that constructs its own `MixpanelInstance` (e.g.,
+    /// for `ProxyServerConfig`) can still wrap it. This is the only test path
+    /// that touches `Mixpanel` directly.
+    @Test func escapeHatchInitWrapsExplicitInstance() async {
+        #if os(macOS)
+        let instance = Mixpanel.initialize(
+            token: "test-token",
+            instanceName: "escape-hatch-mac",
+            optOutTrackingByDefault: true
+        )
+        #else
+        let instance = Mixpanel.initialize(
+            token: "test-token",
+            trackAutomaticEvents: false,
+            instanceName: "escape-hatch-ios",
+            optOutTrackingByDefault: true
+        )
+        #endif
+        let service = MixpanelAnalyticsService(instance: instance)
+        await service.track(AnalyticsEvent("escape-hatch"))
+        await service.flush()
     }
 }

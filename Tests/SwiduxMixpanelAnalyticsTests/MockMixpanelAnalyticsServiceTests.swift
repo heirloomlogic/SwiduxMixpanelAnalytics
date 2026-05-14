@@ -52,4 +52,51 @@ struct MockMixpanelAnalyticsServiceTests {
         #expect(resets == 2)
         #expect(flushes == 1)
     }
+
+    @Test func optOutTogglesStateAndIncrementsCount() async {
+        let mock = MockMixpanelAnalyticsService()
+        #expect(await mock.optedOut == false)
+        #expect(await mock.hasOptedOutTracking() == false)
+
+        await mock.optOutTracking()
+        await mock.optOutTracking()
+
+        #expect(await mock.optOutCount == 2)
+        #expect(await mock.optedOut == true)
+        #expect(await mock.hasOptedOutTracking() == true)
+    }
+
+    @Test func optInRecordsCallAndClearsOptOutState() async {
+        let mock = MockMixpanelAnalyticsService()
+        await mock.optOutTracking()
+
+        await mock.optInTracking(
+            distinctID: "user-1",
+            properties: ["tier": .string("pro")]
+        )
+        await mock.optInTracking()
+
+        let calls = await mock.optInCalls
+        #expect(calls.count == 2)
+        #expect(
+            calls[0]
+                == .init(
+                    distinctID: "user-1",
+                    properties: ["tier": .string("pro")]))
+        #expect(calls[1] == .init(distinctID: nil, properties: nil))
+        #expect(await mock.optedOut == false)
+        #expect(await mock.hasOptedOutTracking() == false)
+    }
+
+    @Test func recordsLoggingAndGeoToggles() async {
+        let mock = MockMixpanelAnalyticsService()
+        #expect(await mock.loggingEnabled == nil)
+        #expect(await mock.useIPAddressForGeoLocation == nil)
+
+        await mock.setLoggingEnabled(true)
+        await mock.setUseIPAddressForGeoLocation(false)
+
+        #expect(await mock.loggingEnabled == true)
+        #expect(await mock.useIPAddressForGeoLocation == false)
+    }
 }

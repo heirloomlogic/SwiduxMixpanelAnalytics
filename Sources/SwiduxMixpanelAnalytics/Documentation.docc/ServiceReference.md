@@ -4,7 +4,7 @@ API reference for ``MixpanelAnalyticsService`` — the Mixpanel-backed `Analytic
 
 ## Overview
 
-`MixpanelAnalyticsService` adapts a `MixpanelInstance` to the `AnalyticsService` protocol that `SwiduxAnalytics.AnalyticsPlugin` requires. It does one job: forward `AnalyticsEvent`, identify, alias, reset, and flush calls to the underlying SDK while translating `AnalyticsValue` into Mixpanel's `Properties` payload. Configuration of the Mixpanel SDK itself remains the caller's responsibility.
+`MixpanelAnalyticsService` owns the Mixpanel SDK on the app's behalf. The token-taking initializer calls `Mixpanel.initialize` internally; runtime GDPR / diagnostic toggles are methods on the service. The app never needs to `import Mixpanel` on the happy path.
 
 For a step-by-step integration walkthrough, see <doc:HowToImplementService>. For value-mapping rules, see <doc:ValueTranslation>.
 
@@ -25,7 +25,31 @@ For a step-by-step integration walkthrough, see <doc:HowToImplementService>. For
 
 ```swift
 public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
-    public init()
+    // iOS / tvOS / watchOS
+    public init(
+        token: String,
+        trackAutomaticEvents: Bool = false,
+        flushInterval: Double = 60,
+        instanceName: String? = nil,
+        optOutTrackingByDefault: Bool = false,
+        useUniqueDistinctId: Bool = false,
+        superProperties: [String: AnalyticsValue]? = nil,
+        serverURL: String? = nil,
+        useGzipCompression: Bool = false
+    )
+
+    // macOS — same as above, minus `trackAutomaticEvents`.
+    public init(
+        token: String,
+        flushInterval: Double = 60,
+        instanceName: String? = nil,
+        optOutTrackingByDefault: Bool = false,
+        useUniqueDistinctId: Bool = false,
+        superProperties: [String: AnalyticsValue]? = nil,
+        serverURL: String? = nil,
+        useGzipCompression: Bool = false
+    )
+
     public init(instance: MixpanelInstance)
 }
 ```
@@ -35,16 +59,16 @@ Value type holding a single reference to a `MixpanelInstance`. `@unchecked Senda
 #### Initializers
 
 ```swift
-public init()
+public init(token: String, ...)
 ```
 
-Wraps `Mixpanel.mainInstance()`. You must call `Mixpanel.initialize(token:trackAutomaticEvents:)` (or a macOS-equivalent overload) before constructing the service — `Mixpanel.mainInstance()` traps when uninitialized.
+Calls `Mixpanel.initialize(token:...)` internally and retains the resulting instance. Parameters mirror the Mixpanel SDK; `superProperties` takes `[String: AnalyticsValue]` so the app does not need to reference `MixpanelType`. On macOS, `trackAutomaticEvents` is omitted (the SDK does not accept it there).
 
 ```swift
 public init(instance: MixpanelInstance)
 ```
 
-Wraps an explicitly-provided instance. Use this when the app runs multiple Mixpanel projects under named instances.
+Escape hatch for apps that need to build their own `MixpanelInstance` (for example, to use `ProxyServerConfig`). Most apps should prefer the token initializer; this is the only path that requires `import Mixpanel` in your app.
 
 #### `track(_:) async`
 
@@ -65,6 +89,26 @@ Forwards to `MixpanelInstance.reset(completion:)` and awaits its callback. Clear
 #### `flush() async`
 
 Forwards to `MixpanelInstance.flush(completion:)` and awaits its callback. The plugin's own `flush()` is the deterministic sync point in tests — it awaits all pending fire-and-forget tracking tasks and then calls this.
+
+#### `optOutTracking() async`
+
+Forwards to `MixpanelInstance.optOutTracking()`. Subsequent `track` / `identify` calls are dropped until ``MixpanelAnalyticsService/optInTracking(distinctID:properties:)`` is called. Also clears the existing people profile and charges.
+
+#### `optInTracking(distinctID:properties:) async`
+
+Forwards to `MixpanelInstance.optInTracking(distinctId:properties:)`. Optionally identifies the user and records people-profile properties as part of opting in.
+
+#### `hasOptedOutTracking() async -> Bool`
+
+Forwards to `MixpanelInstance.hasOptedOutTracking()`.
+
+#### `setLoggingEnabled(_:) async`
+
+Sets `MixpanelInstance.loggingEnabled`. Useful during development; disable in release.
+
+#### `setUseIPAddressForGeoLocation(_:) async`
+
+Sets `MixpanelInstance.useIPAddressForGeoLocation`. Disable when your privacy policy forbids IP-based geo resolution.
 
 ## See Also
 

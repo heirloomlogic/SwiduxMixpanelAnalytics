@@ -1,6 +1,6 @@
 # Getting Started with SwiduxMixpanelAnalytics
 
-Add the package, initialize Mixpanel, register the analytics plugin with `MixpanelAnalyticsService`, and start dispatching events.
+Add the package, build `MixpanelAnalyticsService` with your token, register the analytics plugin, and start dispatching events.
 
 ## Overview
 
@@ -20,12 +20,12 @@ This guide is the shortest path from a wired Swidux app with `SwiduxAnalytics` r
 .product(name: "SwiduxMixpanelAnalytics", package: "SwiduxMixpanelAnalytics"),
 ```
 
-## Initialize Mixpanel at launch
+## Build the service at launch
 
-`MixpanelAnalyticsService()` wraps `Mixpanel.mainInstance()`. Initialize Mixpanel before constructing the store so the main instance is ready:
+`MixpanelAnalyticsService` owns `Mixpanel.initialize` internally — you do not need to `import Mixpanel`. Construct the service with your token (and any Mixpanel knobs you care about) before configuring the store:
 
 ```swift
-import Mixpanel
+import SwiduxMixpanelAnalytics
 import SwiftUI
 
 @main
@@ -33,8 +33,11 @@ struct MyApp: App {
     @State private var store: AppStore
 
     init() {
-        Mixpanel.initialize(token: "your-mixpanel-token", trackAutomaticEvents: false)
-        _store = State(wrappedValue: AppStore.configured())
+        let analyticsService = MixpanelAnalyticsService(
+            token: "your-mixpanel-token",
+            optOutTrackingByDefault: true
+        )
+        _store = State(wrappedValue: AppStore.configured(analyticsService: analyticsService))
     }
 
     var body: some Scene {
@@ -43,11 +46,11 @@ struct MyApp: App {
 }
 ```
 
-`Mixpanel.initialize` exposes additional knobs (EU server URL, opt-out by default, super properties); pick the overload that fits your app and call it once. See the [Mixpanel iOS SDK](https://github.com/mixpanel/mixpanel-swift) for the full list.
+The initializer surfaces every Mixpanel knob the app would otherwise need to set on `Mixpanel.initialize` (EU `serverURL`, `optOutTrackingByDefault`, `flushInterval`, `instanceName`, `superProperties`, `useGzipCompression`, and — on non-macOS — `trackAutomaticEvents`). Pick what you need; everything else has a sensible default. See <doc:HowToImplementService> for the longer treatment.
 
 ## Register the plugin with `MixpanelAnalyticsService`
 
-Pass `MixpanelAnalyticsService()` to `AnalyticsPlugin` in your `Store.configured()` factory:
+Pass the service to `AnalyticsPlugin` in your `Store.configured()` factory:
 
 ```swift
 import Swidux
@@ -55,7 +58,7 @@ import SwiduxAnalytics
 import SwiduxMixpanelAnalytics
 
 extension Store where State == AppState, Action == AppAction {
-    static func configured() -> AppStore {
+    static func configured(analyticsService: some AnalyticsService) -> AppStore {
         let plugins = PluginHost<AppState, AppAction>()
 
         plugins.register(
@@ -63,7 +66,7 @@ extension Store where State == AppState, Action == AppAction {
                 state: \.analytics,
                 action: AppAction.analytics,
                 extractAction: { if case .analytics(let a) = $0 { return a }; return nil },
-                service: MixpanelAnalyticsService(),
+                service: analyticsService,
                 mapper: analyticsMapper,
                 identity: analyticsIdentity
             )
@@ -97,6 +100,6 @@ struct ContentView: View {
 
 ## Next Steps
 
-- <doc:HowToImplementService> — `Mixpanel.initialize` overloads, EU residency, opt-out by default.
+- <doc:HowToImplementService> — EU residency, opt-out by default, multiple Mixpanel projects, the `MixpanelInstance` escape hatch.
 - <doc:HowToPreviewAndTest> — Drive analytics state from previews and tests using ``MockMixpanelAnalyticsService``.
 - <doc:ValueTranslation> — How `AnalyticsValue` cases map onto Mixpanel `Properties`.
