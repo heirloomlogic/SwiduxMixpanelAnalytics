@@ -30,6 +30,31 @@ struct MockMixpanelAnalyticsServiceTests {
         #expect(calls == [.init(userID: "user-1", properties: ["tier": .string("pro")])])
     }
 
+    @Test func recordsRepeatedIdentifyCallsWithMutatingProperties() async {
+        let mock = MockMixpanelAnalyticsService()
+        await mock.identify(userID: "user-1", properties: ["is_pro": .bool(false)])
+        await mock.identify(userID: "user-1", properties: ["is_pro": .bool(true)])
+        await mock.identify(
+            userID: "user-1",
+            properties: [
+                "is_pro": .bool(true),
+                "experiment_variant": .string("b"),
+            ])
+
+        let calls = await mock.identifyCalls
+        #expect(
+            calls == [
+                .init(userID: "user-1", properties: ["is_pro": .bool(false)]),
+                .init(userID: "user-1", properties: ["is_pro": .bool(true)]),
+                .init(
+                    userID: "user-1",
+                    properties: [
+                        "is_pro": .bool(true),
+                        "experiment_variant": .string("b"),
+                    ]),
+            ])
+    }
+
     @Test func recordsAliasCalls() async {
         let mock = MockMixpanelAnalyticsService()
         await mock.alias(newID: "new", previousID: "old")

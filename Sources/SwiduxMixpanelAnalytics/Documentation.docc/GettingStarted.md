@@ -81,7 +81,7 @@ extension Store where State == AppState, Action == AppAction {
 }
 ```
 
-That's it — the plugin will route mapped events through the service, auto-identify the user when `analyticsIdentity.userID` returns a value, and flush on your call to `store.analyticsPlugin.flush()` from `scenePhase == .background`.
+That's it — the plugin will route mapped events through the service, re-fire `identify` whenever the `(userID, userProperties)` pair derived from state changes, and flush on your call to `store.analyticsPlugin.flush()` from `scenePhase == .background`.
 
 ## Verify the wiring
 

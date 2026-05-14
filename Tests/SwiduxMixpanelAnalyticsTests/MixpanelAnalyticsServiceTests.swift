@@ -52,6 +52,22 @@ struct MixpanelAnalyticsServiceTests {
         await service.flush()
     }
 
+    /// Repeated `identify` for the same `userID` must be idempotent updates,
+    /// not alias rotations. We can't observe `people.set` directly, so this
+    /// only smoke-tests resolution under rapid mutation.
+    @Test func repeatedIdentifyCallsWithMutatingPropertiesResolve() async {
+        let service = Self.makeService()
+        await service.identify(userID: "u1", properties: ["is_pro": .bool(false)])
+        await service.identify(userID: "u1", properties: ["is_pro": .bool(true)])
+        await service.identify(
+            userID: "u1",
+            properties: [
+                "is_pro": .bool(true),
+                "experiment_variant": .string("b"),
+            ])
+        await service.flush()
+    }
+
     @Test func flushContinuationResumes() async {
         let service = Self.makeService()
         await withTaskGroup(of: Void.self) { group in
