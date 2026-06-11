@@ -10,8 +10,10 @@ import SwiduxAnalytics
 /// instance.
 ///
 /// The adapter is the configuration boundary: pass the token and any other
-/// Mixpanel knobs to ``init(token:trackAutomaticEvents:flushInterval:instanceName:optOutTrackingByDefault:useUniqueDistinctId:superProperties:serverURL:useGzipCompression:)``
-/// and the app never needs to `import Mixpanel`.
+/// Mixpanel knobs to ``init(token:trackAutomaticEvents:flushInterval:instanceName:optOutTrackingByDefault:useUniqueDistinctId:superProperties:serverURL:useGzipCompression:excludeProperties:)``
+/// and the app never needs to `import Mixpanel`. The initializer is the same
+/// on every platform; it builds a `MixpanelOptions` and calls
+/// `Mixpanel.initialize(options:)`.
 ///
 /// ```swift
 /// let service = MixpanelAnalyticsService(
@@ -26,38 +28,12 @@ import SwiduxAnalytics
 public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     private let instance: MixpanelInstance
 
-    #if os(macOS)
-    /// macOS variant of the token initializer. Identical to the non-macOS
-    /// variant except `trackAutomaticEvents` is omitted — the macOS Mixpanel
-    /// SDK does not accept it. See the non-macOS init for parameter docs.
-    public init(
-        token: String,
-        flushInterval: Double = 60,
-        instanceName: String? = nil,
-        optOutTrackingByDefault: Bool = false,
-        useUniqueDistinctId: Bool = false,
-        superProperties: [String: AnalyticsValue]? = nil,
-        serverURL: String? = nil,
-        useGzipCompression: Bool = false
-    ) {
-        self.instance = Mixpanel.initialize(
-            token: token,
-            flushInterval: flushInterval,
-            instanceName: instanceName,
-            optOutTrackingByDefault: optOutTrackingByDefault,
-            useUniqueDistinctId: useUniqueDistinctId,
-            superProperties: Self.mixpanelSuperProperties(superProperties),
-            serverURL: serverURL,
-            useGzipCompression: useGzipCompression
-        )
-    }
-    #else
     /// Initializes Mixpanel with the given token and wraps the resulting
     /// instance.
     ///
-    /// Parameters mirror `Mixpanel.initialize(...)`; the `superProperties` map
-    /// is typed as `[String: AnalyticsValue]` so the app does not need to
-    /// reference `MixpanelType`.
+    /// Parameters mirror `MixpanelOptions`; the `superProperties` map is typed
+    /// as `[String: AnalyticsValue]` so the app does not need to reference
+    /// `MixpanelType`.
     ///
     /// - Parameters:
     ///   - token: The Mixpanel project token.
@@ -75,7 +51,10 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     ///   - serverURL: Override the Mixpanel API base URL (e.g. EU residency).
     ///     Defaults to `nil`.
     ///   - useGzipCompression: Compress outbound requests with gzip. Defaults
-    ///     to `false`.
+    ///     to `true`, matching `MixpanelOptions`.
+    ///   - excludeProperties: Property keys stripped from every event and
+    ///     people update before they are stored or sent — e.g. keys that may
+    ///     carry PII. Defaults to empty.
     public init(
         token: String,
         trackAutomaticEvents: Bool = false,
@@ -85,23 +64,26 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         useUniqueDistinctId: Bool = false,
         superProperties: [String: AnalyticsValue]? = nil,
         serverURL: String? = nil,
-        useGzipCompression: Bool = false
+        useGzipCompression: Bool = true,
+        excludeProperties: Set<String> = []
     ) {
         self.instance = Mixpanel.initialize(
-            token: token,
-            trackAutomaticEvents: trackAutomaticEvents,
-            flushInterval: flushInterval,
-            instanceName: instanceName,
-            optOutTrackingByDefault: optOutTrackingByDefault,
-            useUniqueDistinctId: useUniqueDistinctId,
-            superProperties: Self.mixpanelSuperProperties(superProperties),
-            serverURL: serverURL,
-            useGzipCompression: useGzipCompression
+            options: MixpanelOptions(
+                token: token,
+                flushInterval: flushInterval,
+                instanceName: instanceName,
+                trackAutomaticEvents: trackAutomaticEvents,
+                optOutTrackingByDefault: optOutTrackingByDefault,
+                useUniqueDistinctId: useUniqueDistinctId,
+                superProperties: Self.nonEmptyProperties(superProperties),
+                serverURL: serverURL,
+                useGzipCompression: useGzipCompression,
+                excludeProperties: excludeProperties
+            )
         )
     }
-    #endif
 
-    private static func mixpanelSuperProperties(
+    private static func nonEmptyProperties(
         _ properties: [String: AnalyticsValue]?
     ) -> Properties? {
         guard let properties, !properties.isEmpty else { return nil }
@@ -162,14 +144,14 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
 
     /// Opts the user back into tracking and, if `distinctID` is provided,
     /// identifies them. Optional `properties` are recorded against the user
-    /// profile.
+    /// profile; empty properties are passed as `nil`.
     public func optInTracking(
         distinctID: String? = nil,
         properties: [String: AnalyticsValue]? = nil
     ) async {
         instance.optInTracking(
             distinctId: distinctID,
-            properties: properties?.toMixpanelProperties()
+            properties: Self.nonEmptyProperties(properties)
         )
     }
 

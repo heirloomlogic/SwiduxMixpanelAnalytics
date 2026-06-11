@@ -13,7 +13,7 @@ This guide is the shortest path from a wired Swidux app with `SwiduxAnalytics` r
 **Package.swift:**
 
 ```swift
-.package(url: "https://github.com/HeirloomLogic/SwiduxMixpanelAnalytics", branch: "main"),
+.package(url: "https://github.com/HeirloomLogic/SwiduxMixpanelAnalytics", from: "1.0.0"),
 ```
 
 ```swift
@@ -46,7 +46,7 @@ struct MyApp: App {
 }
 ```
 
-The initializer surfaces every Mixpanel knob the app would otherwise need to set on `Mixpanel.initialize` (EU `serverURL`, `optOutTrackingByDefault`, `flushInterval`, `instanceName`, `superProperties`, `useGzipCompression`, and — on non-macOS — `trackAutomaticEvents`). Pick what you need; everything else has a sensible default. See <doc:HowToImplementService> for the longer treatment.
+The initializer surfaces every Mixpanel knob the app would otherwise need to set on `Mixpanel.initialize` (EU `serverURL`, `optOutTrackingByDefault`, `flushInterval`, `instanceName`, `superProperties`, `useGzipCompression`, `trackAutomaticEvents`, `excludeProperties`) and is identical on every platform. Pick what you need; everything else has a sensible default. See <doc:HowToImplementService> for the longer treatment.
 
 ## Register the plugin with `MixpanelAnalyticsService`
 

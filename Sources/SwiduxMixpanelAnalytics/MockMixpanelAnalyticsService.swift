@@ -15,6 +15,11 @@ import SwiduxAnalytics
 /// ``MixpanelAnalyticsService`` (opt-out / opt-in / logging / geo) so test
 /// code that exercises GDPR or diagnostic flows can verify the same calls
 /// against either the real adapter or the mock.
+///
+/// > Note: Unlike the real SDK, the mock keeps recording `track` / `identify`
+/// > calls while opted out — a recording mock should never lose history. To
+/// > assert consent behavior, check ``optedOut`` (or
+/// > ``hasOptedOutTracking()``) rather than the absence of recorded events.
 public actor MockMixpanelAnalyticsService: AnalyticsService {
     /// Captured arguments from a single `identify(userID:properties:)` call.
     public struct IdentifyCall: Sendable, Equatable {
