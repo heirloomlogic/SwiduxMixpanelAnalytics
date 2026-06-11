@@ -14,7 +14,7 @@ For most apps:
 let service = MixpanelAnalyticsService(token: "your-token")
 ```
 
-Defaults match the Mixpanel SDK: `flushInterval: 60`, `optOutTrackingByDefault: false`, gzip off, IDFV-based distinct ID. On iOS / tvOS / watchOS, `trackAutomaticEvents` defaults to `false`.
+Defaults match the Mixpanel SDK's `MixpanelOptions`: `flushInterval: 60`, `optOutTrackingByDefault: false`, gzip on, IDFV-based distinct ID, `trackAutomaticEvents: false`. The initializer is the same on every platform.
 
 ## EU / India data residency
 
@@ -72,6 +72,19 @@ await service.setUseIPAddressForGeoLocation(false)
 
 Opt out of server-side IP-based geo resolution when your privacy policy forbids it.
 
+## Exclude properties
+
+Strip named property keys from every event and people update before the SDK stores or sends them — a construction-time guard against PII leaking through event properties:
+
+```swift
+let service = MixpanelAnalyticsService(
+    token: "your-token",
+    excludeProperties: ["email", "full_name"]
+)
+```
+
+Excluded keys are dropped by the Mixpanel SDK itself, so the rule holds no matter which mapper or reducer produced the event.
+
 ## Multiple instances
 
 If your app sends to more than one Mixpanel project, give each a unique `instanceName`:
@@ -97,9 +110,10 @@ For configuration the initializer does not surface — `ProxyServerConfig`, cust
 import Mixpanel  // only required for this advanced path
 
 let instance = Mixpanel.initialize(
-    token: "your-token",
-    trackAutomaticEvents: false,
-    proxyServerConfig: myProxyConfig
+    options: MixpanelOptions(
+        token: "your-token",
+        proxyServerConfig: myProxyConfig
+    )
 )
 let service = MixpanelAnalyticsService(instance: instance)
 ```

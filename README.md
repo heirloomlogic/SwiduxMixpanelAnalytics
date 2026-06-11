@@ -6,7 +6,7 @@
 
 - **Drop-in `AnalyticsService` conformance.** `MixpanelAnalyticsService` forwards `track` / `identify` / `alias` / `reset` / `flush` to the Mixpanel SDK. Empty property dicts are passed as `nil`; nested arrays and dicts are translated recursively.
 - **The adapter is the configuration boundary.** Pass the token and any Mixpanel knobs (EU residency, opt-out by default, flush interval, automatic events, gzip, super properties) to `MixpanelAnalyticsService.init`. The adapter owns `Mixpanel.initialize` internally so apps never `import Mixpanel`. Swapping to a different analytics provider is a one-import, one-line change.
-- **GDPR controls without re-coupling.** Runtime opt-out / opt-in / logging / geo-by-IP toggles are exposed on the adapter itself (`optOutTracking`, `optInTracking`, `setLoggingEnabled`, `setUseIPAddressForGeoLocation`).
+- **GDPR controls without re-coupling.** Runtime opt-out / opt-in / logging / geo-by-IP toggles are exposed on the adapter itself (`optOutTracking`, `optInTracking`, `setLoggingEnabled`, `setUseIPAddressForGeoLocation`), and `excludeProperties:` strips named property keys from every event before they are stored or sent.
 - **Preview- and test-friendly mock.** `MockMixpanelAnalyticsService` is an actor that records every call and exposes its history (`trackedEvents`, `identifyCalls`, `aliasCalls`, `resetCount`, `flushCount`, `optOutCount`, `optInCalls`, `optedOut`, `loggingEnabled`, `useIPAddressForGeoLocation`) for `#expect` assertions. No Mixpanel SDK runtime needed.
 - **Multiple instances supported.** Pass a unique `instanceName:` to each `MixpanelAnalyticsService` for fan-out to multiple Mixpanel projects. For apps that need to build a `MixpanelInstance` themselves (e.g., `ProxyServerConfig`), `MixpanelAnalyticsService(instance:)` is the documented escape hatch.
 
@@ -17,7 +17,7 @@
 **Package.swift.**
 
 ```swift
-.package(url: "https://github.com/HeirloomLogic/SwiduxMixpanelAnalytics", branch: "main"),
+.package(url: "https://github.com/HeirloomLogic/SwiduxMixpanelAnalytics", from: "1.0.0"),
 ```
 
 ```swift
@@ -71,8 +71,8 @@ Full DocC reference at https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/d
 
 - Swift 6.2 / Xcode 26+
 - iOS 18 / macOS 15
-- [Swidux](https://github.com/HeirloomLogic/Swidux) (`SwiduxAnalytics` product)
-- [Mixpanel iOS SDK](https://github.com/mixpanel/mixpanel-swift) 4.3+
+- [Swidux](https://github.com/HeirloomLogic/Swidux) 1.3+ (`SwiduxAnalytics` product)
+- [Mixpanel Swift SDK](https://github.com/mixpanel/mixpanel-swift) 6.4+
 
 ## License
 

@@ -8,6 +8,9 @@ on:
     branches:
       - "**"
 
+permissions:
+  contents: read
+
 jobs:
   test-macos:
     runs-on: macos-26
@@ -17,3 +20,16 @@ jobs:
 
       - name: Test
         run: swift test
+
+  test-ios:
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Test (iOS Simulator)
+        run: |
+          xcodebuild test -scheme SwiduxMixpanelAnalytics \
+            -destination "platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -oE 'iPhone [0-9]+( Pro)?( Max)?' | sort -V | tail -1)" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation

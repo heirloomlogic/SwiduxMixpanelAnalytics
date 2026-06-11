@@ -25,7 +25,7 @@ For a step-by-step integration walkthrough, see <doc:HowToImplementService>. For
 
 ```swift
 public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
-    // iOS / tvOS / watchOS
+    // Identical on every platform.
     public init(
         token: String,
         trackAutomaticEvents: Bool = false,
@@ -35,19 +35,8 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         useUniqueDistinctId: Bool = false,
         superProperties: [String: AnalyticsValue]? = nil,
         serverURL: String? = nil,
-        useGzipCompression: Bool = false
-    )
-
-    // macOS — same as above, minus `trackAutomaticEvents`.
-    public init(
-        token: String,
-        flushInterval: Double = 60,
-        instanceName: String? = nil,
-        optOutTrackingByDefault: Bool = false,
-        useUniqueDistinctId: Bool = false,
-        superProperties: [String: AnalyticsValue]? = nil,
-        serverURL: String? = nil,
-        useGzipCompression: Bool = false
+        useGzipCompression: Bool = true,
+        excludeProperties: Set<String> = []
     )
 
     public init(instance: MixpanelInstance)
@@ -62,7 +51,7 @@ Value type holding a single reference to a `MixpanelInstance`. `@unchecked Senda
 public init(token: String, ...)
 ```
 
-Calls `Mixpanel.initialize(token:...)` internally and retains the resulting instance. Parameters mirror the Mixpanel SDK; `superProperties` takes `[String: AnalyticsValue]` so the app does not need to reference `MixpanelType`. On macOS, `trackAutomaticEvents` is omitted (the SDK does not accept it there).
+Builds a `MixpanelOptions` and calls `Mixpanel.initialize(options:)` internally, retaining the resulting instance. Parameters mirror `MixpanelOptions` — including its `useGzipCompression: true` default; `superProperties` takes `[String: AnalyticsValue]` so the app does not need to reference `MixpanelType`.
 
 ```swift
 public init(instance: MixpanelInstance)
