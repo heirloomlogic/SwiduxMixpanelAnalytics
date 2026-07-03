@@ -1,11 +1,11 @@
 # SwiduxMixpanelAnalytics
 
-**Mixpanel adapter for Swidux's `AnalyticsPlugin`.** Implements `AnalyticsService` against `Mixpanel.mainInstance()`, ships a recording mock for previews and tests, and translates `AnalyticsValue` into Mixpanel's `Properties` payload with no app-level bridging code.
+**Mixpanel adapter for Swidux's `AnalyticsPlugin`.** Implements `AnalyticsService` against a Mixpanel SDK instance it initializes and owns, ships a recording mock for previews and tests, and translates `AnalyticsValue` into Mixpanel's `Properties` payload with no app-level bridging code.
 
 ## Why this package
 
 - **Drop-in `AnalyticsService` conformance.** `MixpanelAnalyticsService` forwards `track` / `identify` / `alias` / `reset` / `flush` to the Mixpanel SDK. Empty property dicts are passed as `nil`; nested arrays and dicts are translated recursively.
-- **The adapter is the configuration boundary.** Pass the token and any Mixpanel knobs (EU residency, opt-out by default, flush interval, automatic events, gzip, super properties) to `MixpanelAnalyticsService.init`. The adapter owns `Mixpanel.initialize` internally so apps never `import Mixpanel`. Swapping to a different analytics provider is a one-import, one-line change.
+- **The adapter is the configuration boundary.** Pass the token and any Mixpanel knobs (EU residency, opt-out by default, flush interval, automatic events, gzip, super properties, custom device IDs via `deviceIdProvider:`) to `MixpanelAnalyticsService.init`. The adapter owns `Mixpanel.initialize` internally so apps never `import Mixpanel`. Swapping to a different analytics provider is a one-import, one-line change.
 - **GDPR controls without re-coupling.** Runtime opt-out / opt-in / logging / geo-by-IP toggles are exposed on the adapter itself (`optOutTracking`, `optInTracking`, `setLoggingEnabled`, `setUseIPAddressForGeoLocation`), and `excludeProperties:` strips named property keys from every event before they are stored or sent.
 - **Preview- and test-friendly mock.** `MockMixpanelAnalyticsService` is an actor that records every call and exposes its history (`trackedEvents`, `identifyCalls`, `aliasCalls`, `resetCount`, `flushCount`, `optOutCount`, `optInCalls`, `optedOut`, `loggingEnabled`, `useIPAddressForGeoLocation`) for `#expect` assertions. No Mixpanel SDK runtime needed.
 - **Multiple instances supported.** Pass a unique `instanceName:` to each `MixpanelAnalyticsService` for fan-out to multiple Mixpanel projects. For apps that need to build a `MixpanelInstance` themselves (e.g., `ProxyServerConfig`), `MixpanelAnalyticsService(instance:)` is the documented escape hatch.

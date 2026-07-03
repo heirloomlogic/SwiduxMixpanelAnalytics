@@ -10,7 +10,7 @@ import SwiduxAnalytics
 /// instance.
 ///
 /// The adapter is the configuration boundary: pass the token and any other
-/// Mixpanel knobs to ``init(token:trackAutomaticEvents:flushInterval:instanceName:optOutTrackingByDefault:useUniqueDistinctId:superProperties:serverURL:useGzipCompression:excludeProperties:)``
+/// Mixpanel knobs to ``init(token:trackAutomaticEvents:flushInterval:instanceName:optOutTrackingByDefault:useUniqueDistinctId:deviceIdProvider:superProperties:serverURL:useGzipCompression:excludeProperties:)``
 /// and the app never needs to `import Mixpanel`. The initializer is the same
 /// on every platform; it builds a `MixpanelOptions` and calls
 /// `Mixpanel.initialize(options:)`.
@@ -35,6 +35,12 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// as `[String: AnalyticsValue]` so the app does not need to reference
     /// `MixpanelType`.
     ///
+    /// > Important: The Mixpanel SDK keys instances by `instanceName` (falling
+    /// > back to `token`). Constructing a second service with the same name
+    /// > returns the *existing* SDK instance and silently ignores the new
+    /// > options — construct the service once, where the store is configured,
+    /// > rather than per view or per preview.
+    ///
     /// - Parameters:
     ///   - token: The Mixpanel project token.
     ///   - trackAutomaticEvents: See the Mixpanel SDK docs for the list of
@@ -46,15 +52,25 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     ///     with ``optInTracking(distinctID:properties:)``. Defaults to `false`.
     ///   - useUniqueDistinctId: Use a UUID instead of the IDFV as the default
     ///     distinct ID. Defaults to `false`.
+    ///   - deviceIdProvider: Supplies a custom device ID instead of the SDK
+    ///     default (IDFV, or a UUID with `useUniqueDistinctId`). The SDK calls
+    ///     it synchronously while holding internal locks — at first launch
+    ///     (when no persisted identity exists), on `reset()`, and on
+    ///     ``optOutTracking()`` — so it must be fast: return a value cached at
+    ///     app launch (e.g. a Keychain-minted UUID), never Keychain or network
+    ///     I/O inline. Return `nil` to fall back to the SDK default. Defaults
+    ///     to `nil`.
     ///   - superProperties: Properties attached to every event. Defaults to
     ///     `nil`.
     ///   - serverURL: Override the Mixpanel API base URL (e.g. EU residency).
     ///     Defaults to `nil`.
     ///   - useGzipCompression: Compress outbound requests with gzip. Defaults
     ///     to `true`, matching `MixpanelOptions`.
-    ///   - excludeProperties: Property keys stripped from every event and
-    ///     people update before they are stored or sent — e.g. keys that may
-    ///     carry PII. Defaults to empty.
+    ///   - excludeProperties: Property keys stripped from outgoing events and
+    ///     People `$set` / `$set_once` updates before they are stored or sent
+    ///     — e.g. keys that may carry PII. Other People operators pass through
+    ///     unfiltered, and keys Mixpanel requires for ingestion
+    ///     (`distinct_id`, `token`, …) are never stripped. Defaults to empty.
     public init(
         token: String,
         trackAutomaticEvents: Bool = false,
@@ -62,6 +78,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         instanceName: String? = nil,
         optOutTrackingByDefault: Bool = false,
         useUniqueDistinctId: Bool = false,
+        deviceIdProvider: (@Sendable () -> String?)? = nil,
         superProperties: [String: AnalyticsValue]? = nil,
         serverURL: String? = nil,
         useGzipCompression: Bool = true,
@@ -78,6 +95,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
                 superProperties: Self.nonEmptyProperties(superProperties),
                 serverURL: serverURL,
                 useGzipCompression: useGzipCompression,
+                deviceIdProvider: deviceIdProvider,
                 excludeProperties: excludeProperties
             )
         )
@@ -106,7 +124,12 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
 
     /// Sets the active Mixpanel distinct ID and, if `properties` is non-empty,
     /// updates people-level properties via `instance.people.set`.
+    ///
+    /// Empty `userID`s are dropped entirely: the SDK rejects blank distinct
+    /// IDs, and forwarding the people update anyway would attribute it to the
+    /// previous identity.
     public func identify(userID: String, properties: [String: AnalyticsValue]) async {
+        guard !userID.isEmpty else { return }
         instance.identify(distinctId: userID)
         if !properties.isEmpty {
             instance.people.set(properties: properties.toMixpanelProperties())
@@ -114,8 +137,12 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     }
 
     /// Forwards to `MixpanelInstance.createAlias(_:distinctId:)`. When
-    /// `previousID` is `nil`, the current `instance.distinctId` is used.
+    /// `previousID` is `nil`, the current `instance.distinctId` is used — the
+    /// pattern Mixpanel's own documentation shows; `distinctId` is assigned
+    /// synchronously during SDK initialization, so it is never empty. Empty
+    /// `newID`s are dropped, mirroring the SDK's blank-alias rejection.
     public func alias(newID: String, previousID: String?) async {
+        guard !newID.isEmpty else { return }
         instance.createAlias(newID, distinctId: previousID ?? instance.distinctId)
     }
 

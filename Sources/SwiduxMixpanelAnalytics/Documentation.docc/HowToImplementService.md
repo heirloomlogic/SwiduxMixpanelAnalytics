@@ -16,6 +16,8 @@ let service = MixpanelAnalyticsService(token: "your-token")
 
 Defaults match the Mixpanel SDK's `MixpanelOptions`: `flushInterval: 60`, `optOutTrackingByDefault: false`, gzip on, IDFV-based distinct ID, `trackAutomaticEvents: false`. The initializer is the same on every platform.
 
+> Important: The Mixpanel SDK keys instances by `instanceName` (falling back to `token`). Constructing a second service with the same name returns the *existing* SDK instance and silently ignores the new options. Construct the service once, where the store is configured — not per view, per preview, or per test.
+
 ## EU / India data residency
 
 Pass `serverURL:`:
@@ -48,6 +50,24 @@ await service.optOutTracking()
 
 `optInTracking` / `optOutTracking` / ``MixpanelAnalyticsService/hasOptedOutTracking()`` cover the GDPR round-trip without forcing the app to touch Mixpanel directly. Pair these with the plugin's own opt-out flag if you maintain one — both must be opted in for events to be sent.
 
+## Custom device IDs
+
+By default Mixpanel derives the anonymous device ID from the IDFV (or a random UUID with `useUniqueDistinctId: true`), which does not survive app reinstall. If your app maintains its own stable device identity — for example a Keychain-minted UUID hydrated into state at launch — hand it to the SDK with `deviceIdProvider:`:
+
+```swift
+// Cache the ID at launch; the provider must not do I/O inline.
+let deviceID = keychainStore.value(.deviceID) ?? mintAndStoreDeviceID()
+
+let service = MixpanelAnalyticsService(
+    token: "your-token",
+    deviceIdProvider: { deviceID }
+)
+```
+
+The SDK calls the closure synchronously while holding internal locks — at first launch (when no persisted identity exists), on `reset()`, and on opt-out — so it must be fast: return a cached value, never Keychain or network reads. Return `nil` to fall back to the SDK default. Returning the same value every call keeps the device ID stable across resets; returning a fresh value gives ephemeral identities.
+
+> Note: Adding a `deviceIdProvider` to an app that already shipped with the default device ID changes the anonymous identity on that device. The SDK logs a warning when the provided value differs from the persisted one.
+
 ## Flush interval
 
 ```swift
@@ -74,7 +94,7 @@ Opt out of server-side IP-based geo resolution when your privacy policy forbids 
 
 ## Exclude properties
 
-Strip named property keys from every event and people update before the SDK stores or sends them — a construction-time guard against PII leaking through event properties:
+Strip named property keys from outgoing events and People `$set` / `$set_once` updates before the SDK stores or sends them — a construction-time guard against PII leaking through event properties:
 
 ```swift
 let service = MixpanelAnalyticsService(
@@ -83,7 +103,7 @@ let service = MixpanelAnalyticsService(
 )
 ```
 
-Excluded keys are dropped by the Mixpanel SDK itself, so the rule holds no matter which mapper or reducer produced the event.
+Excluded keys are dropped by the Mixpanel SDK itself, so the rule holds no matter which mapper or reducer produced the event. Other People operators (`$add`, `$append`, `$unset`, …) pass through unfiltered, and keys Mixpanel requires for ingestion (`distinct_id`, `token`, …) are never stripped even if listed.
 
 ## Multiple instances
 

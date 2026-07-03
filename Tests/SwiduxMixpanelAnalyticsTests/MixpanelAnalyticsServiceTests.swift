@@ -3,6 +3,7 @@
 //  SwiduxMixpanelAnalyticsTests
 //
 
+import Foundation
 import Mixpanel
 import SwiduxAnalytics
 import Testing
@@ -104,6 +105,40 @@ struct MixpanelAnalyticsServiceTests {
         await service.setLoggingEnabled(true)
         await service.setUseIPAddressForGeoLocation(false)
         await service.setLoggingEnabled(false)
+    }
+
+    /// The SDK consults `deviceIdProvider` only when no persisted identity
+    /// exists for the instance name, so the name must be unique per run —
+    /// `#function` (stable across runs) would go stale after the first one.
+    @Test func deviceIdProviderSeedsDistinctID() async {
+        let name = "device-id-\(UUID().uuidString)"
+        let customID = "custom-\(UUID().uuidString)"
+        let service = MixpanelAnalyticsService(
+            token: "test-token",
+            instanceName: name,
+            optOutTrackingByDefault: true,
+            deviceIdProvider: { customID }
+        )
+        await service.flush()
+        #expect(Mixpanel.getInstance(name: name)?.distinctId.hasSuffix(customID) == true)
+    }
+
+    /// The SDK rejects blank distinct IDs, so the adapter drops the whole
+    /// call — otherwise the people update would attach to the previous
+    /// identity. Non-delivery isn't observable here; verify clean resolution.
+    @Test func identifyWithEmptyUserIDResolves() async {
+        let service = Self.makeService()
+        await service.identify(userID: "", properties: ["tier": .string("free")])
+        await service.flush()
+    }
+
+    /// Blank `newID`s are dropped to mirror the SDK's blank-alias rejection.
+    /// Also exercises the `previousID: nil` fallback to `instance.distinctId`.
+    @Test func aliasWithEmptyOrNilArgumentsResolves() async {
+        let service = Self.makeService()
+        await service.alias(newID: "", previousID: nil)
+        await service.alias(newID: "alias-nil-previous", previousID: nil)
+        await service.flush()
     }
 
     /// Escape hatch: an app that constructs its own `MixpanelInstance` (e.g.,

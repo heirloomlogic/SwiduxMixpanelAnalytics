@@ -65,6 +65,8 @@ All accessors are `async` — wrap reads in `await`.
 
 The mock holds no buffers and adds no latency: every `track`/`identify`/`alias` records synchronously inside the actor. The plugin's own `flush()` is still the right sync point for test assertions, since it drains the plugin's own fire-and-forget task counter before the mock is queried.
 
+The mock records *everything*, including calls the real adapter drops — blank-`userID` `identify` and blank-`newID` `alias` calls (see <doc:ServiceReference>), and calls made while opted out. A recording mock should never lose history; assert consent and validity at the call site, not by the absence of records.
+
 ## See Also
 
 - <doc:HowToPreviewAndTest>
