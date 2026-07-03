@@ -33,6 +33,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         instanceName: String? = nil,
         optOutTrackingByDefault: Bool = false,
         useUniqueDistinctId: Bool = false,
+        deviceIdProvider: (@Sendable () -> String?)? = nil,
         superProperties: [String: AnalyticsValue]? = nil,
         serverURL: String? = nil,
         useGzipCompression: Bool = true,
@@ -51,7 +52,9 @@ Value type holding a single reference to a `MixpanelInstance`. `@unchecked Senda
 public init(token: String, ...)
 ```
 
-Builds a `MixpanelOptions` and calls `Mixpanel.initialize(options:)` internally, retaining the resulting instance. Parameters mirror `MixpanelOptions` — including its `useGzipCompression: true` default; `superProperties` takes `[String: AnalyticsValue]` so the app does not need to reference `MixpanelType`.
+Builds a `MixpanelOptions` and calls `Mixpanel.initialize(options:)` internally, retaining the resulting instance. Parameters mirror `MixpanelOptions` — including its `useGzipCompression: true` default; `superProperties` takes `[String: AnalyticsValue]` so the app does not need to reference `MixpanelType`, and `deviceIdProvider` supplies a custom stable device ID (see <doc:HowToImplementService> for the contract: cached value only, no inline I/O).
+
+The Mixpanel SDK keys instances by `instanceName` (falling back to `token`); constructing a second service with the same name returns the existing SDK instance and silently ignores the new options.
 
 ```swift
 public init(instance: MixpanelInstance)
@@ -65,11 +68,11 @@ Forwards to `MixpanelInstance.track(event:properties:)`. Empty `properties` are 
 
 #### `identify(userID:properties:) async`
 
-Forwards to `MixpanelInstance.identify(distinctId:)`, then — if `properties` is non-empty — calls `instance.people.set(properties:)` to update people-level properties.
+Forwards to `MixpanelInstance.identify(distinctId:)`, then — if `properties` is non-empty — calls `instance.people.set(properties:)` to update people-level properties. Empty `userID`s are dropped entirely: the SDK rejects blank distinct IDs, and forwarding the people update anyway would attribute it to the previous identity.
 
 #### `alias(newID:previousID:) async`
 
-Forwards to `MixpanelInstance.createAlias(_:distinctId:)`. When `previousID` is `nil`, the call uses `instance.distinctId` as the source ID, matching Mixpanel's recommended anonymous-to-identified aliasing flow.
+Forwards to `MixpanelInstance.createAlias(_:distinctId:)`. When `previousID` is `nil`, the call uses `instance.distinctId` as the source ID, matching Mixpanel's recommended anonymous-to-identified aliasing flow. Empty `newID`s are dropped, mirroring the SDK's blank-alias rejection.
 
 #### `reset() async`
 
