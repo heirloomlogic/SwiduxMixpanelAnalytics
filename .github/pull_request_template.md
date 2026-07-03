@@ -10,7 +10,6 @@
 - [ ] swift-format lint passes:
       `xcrun swift-format lint --strict --parallel --recursive --configuration .swift-format Sources Tests`.
 - [ ] Public API changes are reflected in the DocC guides under `Sources/**/Documentation.docc/`.
-- [ ] `CHANGELOG.md` updated under `## [Unreleased]`.
 - [ ] The app-facing happy path still requires no `import Mixpanel` (SDK stays behind the adapter).
 
 ## Notes for reviewers
