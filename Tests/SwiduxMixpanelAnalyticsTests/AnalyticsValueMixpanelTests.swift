@@ -97,4 +97,44 @@ struct AnalyticsValueMixpanelTests {
         let props: [String: AnalyticsValue] = [:]
         #expect(props.toMixpanelProperties().isEmpty)
     }
+
+    @Test func arrayOfDictsPreservesStructure() {
+        let value = AnalyticsValue.array([
+            .dict(["id": .int(1), "name": .string("a")]),
+            .dict(["id": .int(2), "name": .string("b")]),
+        ]).toMixpanelType()
+        let array = try? #require(value as? [MixpanelType])
+        let first = array?[0] as? [String: MixpanelType]
+        let second = array?[1] as? [String: MixpanelType]
+        #expect((first?["id"] as? Int) == 1)
+        #expect((first?["name"] as? String) == "a")
+        #expect((second?["id"] as? Int) == 2)
+        #expect((second?["name"] as? String) == "b")
+    }
+
+    @Test func dictContainingArrayPreservesStructure() {
+        let value = AnalyticsValue.dict([
+            "scores": .array([.int(10), .int(20), .int(30)])
+        ]).toMixpanelType()
+        let dict = try? #require(value as? [String: MixpanelType])
+        let scores = dict?["scores"] as? [MixpanelType]
+        #expect((scores?[0] as? Int) == 10)
+        #expect((scores?[1] as? Int) == 20)
+        #expect((scores?[2] as? Int) == 30)
+    }
+
+    @Test func deeplyNestedStructurePreservesFidelity() {
+        // dict → dict → array → dict → scalar (four levels of nesting).
+        let value = AnalyticsValue.dict([
+            "level1": .dict([
+                "level2": .array([
+                    .dict(["level3": .string("deep")])
+                ])
+            ])
+        ]).toMixpanelType()
+        let level1 = (value as? [String: MixpanelType])?["level1"] as? [String: MixpanelType]
+        let level2 = level1?["level2"] as? [MixpanelType]
+        let level3 = level2?[0] as? [String: MixpanelType]
+        #expect((level3?["level3"] as? String) == "deep")
+    }
 }
