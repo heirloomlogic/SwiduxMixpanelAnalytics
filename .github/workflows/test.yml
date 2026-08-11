@@ -11,12 +11,30 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test-macos:
     runs-on: macos-26
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No Package.resolved is committed (deliberate), so key on the manifest
+      # with a fuzzy fallback; SwiftPM's repository cache is content-addressed
+      # and refreshes incrementally on a stale hit.
+      - name: Cache SwiftPM
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/repositories
+            .build/checkouts
+            ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-macos-${{ hashFiles('Package.swift') }}
+          restore-keys: |
+            swiftpm-macos-
 
       - name: Test
         run: swift test
@@ -25,11 +43,20 @@ jobs:
     runs-on: macos-26
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Cache SwiftPM (Xcode)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .spm-packages
+          key: swiftpm-ios-${{ hashFiles('Package.swift') }}
+          restore-keys: |
+            swiftpm-ios-
 
       - name: Test (iOS Simulator)
         run: |
           xcodebuild test -scheme SwiduxMixpanelAnalytics \
             -destination "platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -oE 'iPhone [0-9]+( Pro)?( Max)?' | sort -V | tail -1)" \
+            -clonedSourcePackagesDirPath .spm-packages \
             -skipPackagePluginValidation \
             -skipMacroValidation
