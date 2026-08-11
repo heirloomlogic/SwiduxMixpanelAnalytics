@@ -118,8 +118,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// Forwards an event to `MixpanelInstance.track(event:properties:)`. Empty
     /// `event.properties` are passed as `nil`.
     public func track(_ event: AnalyticsEvent) async {
-        let properties: Properties? = event.properties.isEmpty ? nil : event.properties.toMixpanelProperties()
-        instance.track(event: event.name, properties: properties)
+        instance.track(event: event.name, properties: Self.nonEmptyProperties(event.properties))
     }
 
     /// Sets the active Mixpanel distinct ID and, if `properties` is non-empty,
@@ -147,7 +146,9 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     }
 
     /// Forwards to `MixpanelInstance.reset(completion:)` and awaits the
-    /// completion callback before returning.
+    /// completion callback before returning. Suspends until the SDK invokes its
+    /// completion; the SDK bounds each underlying network request internally
+    /// (~120 s), so this does not hang on unreachable servers.
     public func reset() async {
         await withCheckedContinuation { continuation in
             instance.reset { continuation.resume() }
@@ -155,7 +156,9 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     }
 
     /// Forwards to `MixpanelInstance.flush(completion:)` and awaits the
-    /// completion callback before returning.
+    /// completion callback before returning. Suspends until the SDK invokes its
+    /// completion; the SDK bounds each underlying network request internally
+    /// (~120 s), so this does not hang on unreachable servers.
     public func flush() async {
         await withCheckedContinuation { continuation in
             instance.flush { continuation.resume() }

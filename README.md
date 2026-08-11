@@ -72,7 +72,7 @@ Full DocC reference at https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/d
 - Swift 6.2 / Xcode 26+
 - iOS 18 / macOS 15
 - [Swidux](https://github.com/HeirloomLogic/Swidux) 1.3+ (`SwiduxAnalytics` product)
-- [Mixpanel Swift SDK](https://github.com/mixpanel/mixpanel-swift) 6.4+
+- [Mixpanel Swift SDK](https://github.com/mixpanel/mixpanel-swift) 6.5.1+
 
 ## License
 
