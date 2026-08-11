@@ -4,8 +4,8 @@
 //
 
 import Foundation
-import Synchronization
 import SwiduxAnalytics
+import Synchronization
 import Testing
 
 @testable import SwiduxMixpanelAnalytics
@@ -71,12 +71,21 @@ struct MixpanelCapturePipelineTests {
             Self.captured.withLock {
                 $0.append(CapturedRequest(path: request.url?.path ?? "", body: body))
             }
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 200,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "text/plain"]
-            )!
+            // `canInit` already matched on the request's host, so both unwraps
+            // below are structurally unreachable. Fail the request rather than
+            // force-unwrap: a broken assumption then surfaces as a failed
+            // assertion instead of a crashed test process.
+            guard let url = request.url,
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "text/plain"]
+                )
+            else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+                return
+            }
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             // The SDK's flush parser reads the body as an integer status and
             // treats "1" as accepted. We must always respond, or the SDK waits
