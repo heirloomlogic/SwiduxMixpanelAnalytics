@@ -1,6 +1,9 @@
 name: Lint
 
 on:
+  # Both triggers are deliberate — see the matching note in test.yml. This repo
+  # is squash-merge-only, so the commit on `main` is a new SHA that PR CI never
+  # linted.
   pull_request:
   push:
     branches: [main]
@@ -15,9 +18,17 @@ concurrency:
 jobs:
   swift-format-lint:
     runs-on: macos-26
+    # The job runs in ~12s; 10 minutes is pure hang protection against the
+    # six-hour GitHub default.
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job executes ci-lint-setup from another repository (below).
+          # Without this, GITHUB_TOKEN would sit in .git/config where that
+          # script — and anything it invokes — could read it.
+          persist-credentials: false
 
       # Persnicket's ci-lint-setup is *executed* in fork-PR context, so it is
       # checked out at an exact commit instead of trusting SwiftPM's `from:`
@@ -30,6 +41,7 @@ jobs:
           repository: HeirloomLogic/Persnicket
           ref: 06bda7e73c3e4d1358f1e612225716bfaf17cca6 # 2.2.0
           path: .persnicket-ci
+          persist-credentials: false
 
       - name: Setup swift-format lint
         run: .persnicket-ci/bin/ci-lint-setup

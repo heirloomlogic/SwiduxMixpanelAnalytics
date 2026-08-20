@@ -1,6 +1,13 @@
 name: Tests
 
 on:
+  # Both triggers are deliberate. Running the same job on `pull_request` and
+  # `push: main` is normally a flat 2x waste, but this repo allows squash merges
+  # only (`allow_merge_commit: false`, `allow_rebase_merge: false`), so the
+  # commit that lands on `main` is a new SHA that PR CI never ran against —
+  # measured on PR #11, head 355a0cd vs merge commit 26b457d. Drop the push
+  # trigger and `main` becomes untested. Revisit only if merge commits are
+  # re-enabled.
   push:
     branches:
       - main
@@ -18,9 +25,17 @@ concurrency:
 jobs:
   test-macos:
     runs-on: macos-26
+    # ~2x the observed p90 of 106s, with headroom for a cold SwiftPM cache. The
+    # GitHub default is six hours, which a hung `swift test` would hold in full.
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `swift test` resolves and builds mixpanel-swift and Swidux after this
+          # step. checkout still defaults this to true in v7.0.1, which would
+          # leave GITHUB_TOKEN in .git/config for that third-party code to read.
+          persist-credentials: false
 
       # No Package.resolved is committed (deliberate), so key on the manifest
       # with a fuzzy fallback; SwiftPM's repository cache is content-addressed
@@ -41,9 +56,15 @@ jobs:
 
   test-ios:
     runs-on: macos-26
+    # ~2x the observed p90 of 127s, with extra headroom because simulator boot
+    # time is the most variable part of this job.
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # xcodebuild resolves and builds third-party packages after this step.
+          persist-credentials: false
 
       - name: Cache SwiftPM (Xcode)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

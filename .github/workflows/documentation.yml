@@ -7,18 +7,34 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: pages-deploy
-  cancel-in-progress: true
+  # `false` is deliberate: the last step force-pushes to gh-pages. Cancelling a
+  # deploy halfway can leave that branch inconsistent, which is worse than
+  # letting a superseded run finish.
+  cancel-in-progress: false
 
 jobs:
   documentation:
     runs-on: macos-26
+    # ~2x the observed p90 of 176s, with headroom for a cold DocC build.
+    timeout-minutes: 20
+    permissions:
+      # Scoped to this job rather than the workflow: only the gh-pages deploy
+      # step below needs write.
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job enables .dev-tooling, so the Persnoop build-tool plugin and
+          # swift-docc-plugin execute after checkout. The deploy still works:
+          # github-pages-deploy-action runs `git remote rm origin` and adds its
+          # own token-authenticated remote (src/git.ts), so it never reads the
+          # persisted credentials.
+          persist-credentials: false
 
       - name: Enable dev tooling
         run: touch .dev-tooling
