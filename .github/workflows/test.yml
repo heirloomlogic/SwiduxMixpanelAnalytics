@@ -54,6 +54,57 @@ jobs:
       - name: Test
         run: swift test
 
+  # 1.1.0 advertised mixpanel-swift `from: "6.4.0"` but couldn't actually
+  # compile against 6.4.0 exactly — nothing caught it because CI only ever
+  # resolves the newest versions that satisfy `from:`, never the floor it
+  # promises. This job forces every direct dependency to its declared floor
+  # so a repeat of that gap fails CI instead of shipping.
+  test-macos-floor:
+    runs-on: macos-26
+    # Same shape as test-macos; rewriting Package.swift's `from:` to `exact:`
+    # is a single sed pass, so the same budget applies.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `swift test` resolves and builds mixpanel-swift and Swidux after this
+          # step. checkout still defaults this to true in v7.0.1, which would
+          # leave GITHUB_TOKEN in .git/config for that third-party code to read.
+          persist-credentials: false
+
+      # No Package.resolved is committed (deliberate), so key on the manifest
+      # with a fuzzy fallback; SwiftPM's repository cache is content-addressed
+      # and refreshes incrementally on a stale hit. Distinct prefix from
+      # test-macos: this job resolves `exact:` pins to the floor versions, so
+      # its checkouts aren't interchangeable with the `from:` job's cache.
+      - name: Cache SwiftPM
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/repositories
+            .build/checkouts
+            ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-macos-floor-${{ hashFiles('Package.swift') }}
+          restore-keys: |
+            swiftpm-macos-floor-
+
+      # Rewrite each direct dependency's `from:` to `exact:` so this job
+      # builds against the floor the manifest promises, not whatever's newest
+      # today; deriving it from the manifest means it tracks floor bumps
+      # automatically. Scoped to the main `Package(...)` call (everything
+      # before the dev-tooling MARK comment) so the gated dev-tooling
+      # dependencies below it — inactive here since `.dev-tooling` is never
+      # created in this job — are left untouched.
+      - name: Pin dependencies to their declared floor versions
+        run: |
+          sed -E -i '' '1,/\/\/ MARK: - Dev-only tooling/ s/(\.package\(url: "[^"]+", )from: "([^"]+)"/\1exact: "\2"/' Package.swift
+          echo "Dependencies pinned for this job:"
+          sed -n '/dependencies: \[/,/\],/p' Package.swift
+
+      - name: Test
+        run: swift test
+
   test-ios:
     runs-on: macos-26
     # ~2x the observed p90 of 127s, with extra headroom because simulator boot
