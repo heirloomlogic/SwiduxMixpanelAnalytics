@@ -1,6 +1,7 @@
 .build/
 .dev-tooling
 .DS_Store
+.spm-packages/
 .swiftpm/
 .swift-format
 Package.resolved
