@@ -76,8 +76,32 @@ jobs:
 
       - name: Test (iOS Simulator)
         run: |
+          # A name-based `grep -oE 'iPhone [0-9]+( Pro)?( Max)?'` (the previous
+          # approach) never matches "iPhone Air" and truncates "iPhone 16e"
+          # down to "iPhone 16" — silently picking a stale or wrong simulator.
+          # Select by UDID instead: parse simctl's own JSON (jq ships on
+          # GitHub's macOS runners), take the newest installed iOS runtime,
+          # and pick any available iPhone in it.
+          UDID="$(xcrun simctl list devices available --json | jq -r '
+            .devices
+            | to_entries
+            | map(select(.key | test("^com\\.apple\\.CoreSimulator\\.SimRuntime\\.iOS-[0-9]+-[0-9]+$")))
+            | map({ver: (.key | capture("iOS-(?<maj>[0-9]+)-(?<min>[0-9]+)$") | [(.maj|tonumber), (.min|tonumber)]), devices: .value})
+            | sort_by(.ver)
+            | reverse
+            | ((.[0] // {}).devices // [])
+            | map(select((.name | test("^iPhone")) and .isAvailable))
+            | .[0].udid // ""
+          ')"
+
+          if [ -z "$UDID" ]; then
+            echo "::error::No available iPhone simulator found in any installed iOS runtime" >&2
+            exit 1
+          fi
+          echo "Selected simulator UDID: $UDID"
+
           xcodebuild test -scheme SwiduxMixpanelAnalytics \
-            -destination "platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -oE 'iPhone [0-9]+( Pro)?( Max)?' | sort -V | tail -1)" \
+            -destination "platform=iOS Simulator,id=$UDID" \
             -clonedSourcePackagesDirPath .spm-packages \
             -skipPackagePluginValidation \
             -skipMacroValidation
