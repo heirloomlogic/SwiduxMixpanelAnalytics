@@ -4,3 +4,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # dependabot-core's Swift file fetcher only requires Package.swift to be
+  # present (`required_files_in?` returns true on Package.swift alone); a
+  # missing Package.resolved is fetched only if present, never mandatory.
+  # Version resolution falls back to invoking the Swift CLI directly, so this
+  # works even though this repo deliberately doesn't commit Package.resolved.
+  - package-ecosystem: swift
+    directory: /
+    schedule:
+      interval: weekly
