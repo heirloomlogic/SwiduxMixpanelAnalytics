@@ -73,6 +73,24 @@ struct AnalyticsValueMixpanelTests {
         #expect((meta?["active"] as? Bool) == true)
     }
 
+    /// Mixpanel's own `assertPropertyTypes` traps `Swift.assert` on a
+    /// non-finite `Double` in Debug builds, so NaN must never reach the SDK
+    /// as a raw `Double`.
+    @Test func nanDoubleMapsToNSNull() {
+        let value = AnalyticsValue.double(.nan).toMixpanelType()
+        #expect(value is NSNull)
+    }
+
+    @Test func positiveInfinityDoubleMapsToNSNull() {
+        let value = AnalyticsValue.double(.infinity).toMixpanelType()
+        #expect(value is NSNull)
+    }
+
+    @Test func negativeInfinityDoubleMapsToNSNull() {
+        let value = AnalyticsValue.double(-.infinity).toMixpanelType()
+        #expect(value is NSNull)
+    }
+
     @Test func intAndDoubleAreNotConflated() {
         let intResult = AnalyticsValue.int(5).toMixpanelType()
         let doubleResult = AnalyticsValue.double(5).toMixpanelType()

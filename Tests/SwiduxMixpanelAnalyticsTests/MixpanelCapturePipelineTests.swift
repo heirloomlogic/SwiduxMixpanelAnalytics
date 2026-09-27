@@ -202,6 +202,28 @@ struct MixpanelCapturePipelineTests {
         #expect(properties["full_name"] == nil)
     }
 
+    /// End-to-end companion to `AnalyticsValueMixpanelTests.nanDoubleMapsToNSNull`:
+    /// a non-finite computed ratio must reach the wire as `null`, not trap the
+    /// Mixpanel SDK's Debug-only type assertion on the way there.
+    @Test func nonFiniteDoubleReachesWireAsNull() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        await service.track(AnalyticsEvent("ratio", ["value": .double(.nan)]))
+        await service.flush()
+
+        let events = MixpanelCaptureURLProtocol.trackEvents(token: token)
+            .filter { $0["event"] as? String == "ratio" }
+        let event = try #require(events.first)
+        let properties = try #require(event["properties"] as? [String: Any])
+        // Without the fix, the raw NaN `Double` falls through Mixpanel's own
+        // `JSONHandler.makeObjectSerializable` to its string fallback and is
+        // sent as the literal string `"nan"` (the Release-mode behavior the
+        // finding calls out) — Debug builds never get this far, they trap
+        // first in `assertPropertyTypes`. Either way, `"nan"` must not reach
+        // the wire.
+        #expect((properties["value"] as? String) != "nan")
+    }
+
     /// Excluded keys must also be stripped from People `$set` updates that ride
     /// out on `/engage/`.
     @Test func excludedPropertiesStrippedFromPeopleSet() async throws {

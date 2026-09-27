@@ -14,7 +14,7 @@ extension AnalyticsValue {
     /// |---|---|
     /// | `.string` | `String` |
     /// | `.int`    | `Int` |
-    /// | `.double` | `Double` |
+    /// | `.double` | `Double`, or `NSNull()` if non-finite (`NaN`, `+inf`, `-inf`) |
     /// | `.bool`   | `Bool` |
     /// | `.date`   | `Date` |
     /// | `.array`  | `[MixpanelType]` |
@@ -24,7 +24,7 @@ extension AnalyticsValue {
         switch self {
         case .string(let value): return value
         case .int(let value): return value
-        case .double(let value): return value
+        case .double(let value): return value.isFinite ? value : NSNull()
         case .bool(let value): return value
         case .date(let value): return value
         case .array(let values): return values.map { $0.toMixpanelType() }
