@@ -131,22 +131,26 @@ jobs:
           # approach) never matches "iPhone Air" and truncates "iPhone 16e"
           # down to "iPhone 16" — silently picking a stale or wrong simulator.
           # Select by UDID instead: parse simctl's own JSON (jq ships on
-          # GitHub's macOS runners), take the newest installed iOS runtime,
-          # and pick any available iPhone in it.
-          UDID="$(xcrun simctl list devices available --json | jq -r '
-            .devices
+          # GitHub's macOS runners), and pick an available iPhone from the
+          # newest iOS runtime that has one and that the selected Xcode's SDK
+          # can target — runner images also carry beta runtimes newer than it.
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          UDID="$(xcrun simctl list devices available --json | jq -r --arg sdk "$SDK" '
+            ($sdk | split(".") | map(tonumber) | .[0:2]) as $max
+            | .devices
             | to_entries
             | map(select(.key | test("^com\\.apple\\.CoreSimulator\\.SimRuntime\\.iOS-[0-9]+-[0-9]+$")))
             | map({ver: (.key | capture("iOS-(?<maj>[0-9]+)-(?<min>[0-9]+)$") | [(.maj|tonumber), (.min|tonumber)]), devices: .value})
+            | map(select(.ver <= $max))
+            | map(.devices |= map(select((.name | test("^iPhone")) and .isAvailable)))
+            | map(select(.devices | length > 0))
             | sort_by(.ver)
             | reverse
-            | ((.[0] // {}).devices // [])
-            | map(select((.name | test("^iPhone")) and .isAvailable))
-            | .[0].udid // ""
+            | .[0].devices[0].udid // ""
           ')"
 
           if [ -z "$UDID" ]; then
-            echo "::error::No available iPhone simulator found in any installed iOS runtime" >&2
+            echo "::error::No available iPhone simulator in any iOS runtime up to SDK $SDK" >&2
             exit 1
           fi
           echo "Selected simulator UDID: $UDID"

@@ -359,6 +359,49 @@ struct MixpanelCapturePipelineTests {
         #expect(!engage.contains { $0["$delete"] != nil })
     }
 
+    /// An opt-out the SDK performed itself — `optOutTrackingByDefault` on an
+    /// install that was already identified, or an app calling the SDK
+    /// directly — still leaves an unattributed `$delete` in the queue. Opting
+    /// back in must not let the next user adopt it.
+    @Test func sdkLevelOptOutNeverDeletesTheNextUsersProfile() async {
+        _ = MixpanelCaptureURLProtocol.registerOnce
+        let token = UUID().uuidString
+        let instance = Mixpanel.initialize(
+            options: MixpanelOptions(
+                token: token,
+                flushInterval: 3600,
+                instanceName: "capture-\(UUID().uuidString)",
+                trackAutomaticEvents: false,
+                serverURL: "https://\(MixpanelCaptureURLProtocol.host)",
+                useGzipCompression: false
+            ))
+        let service = MixpanelAnalyticsService(instance: instance)
+        await service.identify(userID: "alice-\(UUID().uuidString)", properties: [:])
+        await service.flush()
+        instance.optOutTracking()
+        while !instance.hasOptedOutTracking() {
+            await Task.yield()
+        }
+
+        await service.optInTracking(distinctID: "bob-\(UUID().uuidString)")
+        await service.track(AnalyticsEvent("after-consent"))
+        await service.flush()
+
+        #expect(!Self.properties(ofEvent: "after-consent", token: token).isEmpty)
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(!engage.contains { $0["$delete"] != nil })
+    }
+
+    /// The launch barrier relies on the SDK's persisted opt-out key: present
+    /// once a choice is made, absent before.
+    @Test func consentChoiceDetectionTracksTheSDKsStorage() async {
+        let name = "capture-\(UUID().uuidString)"
+        #expect(!MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name))
+        let service = Self.makeService(token: UUID().uuidString, instanceName: name)
+        await service.optOutTracking()
+        #expect(MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name))
+    }
+
     /// Consent hooks fire on every `.setOptedOut` dispatch, so opting in a user
     /// who is already opted in must not emit another `$opt_in` event.
     @Test func optInIsIdempotent() async {
@@ -368,7 +411,7 @@ struct MixpanelCapturePipelineTests {
         await optedIn.optInTracking()
         await optedIn.track(AnalyticsEvent("marker"))
         await optedIn.flush()
-        #expect(!Self.eventNames(token: token).contains("$opt_in"))
+        #expect(Self.eventNames(token: token) == ["marker"])
 
         let secondToken = UUID().uuidString
         let optedOut = Self.makeService(token: secondToken, optOutTrackingByDefault: true)
@@ -423,26 +466,47 @@ struct MixpanelCapturePipelineTests {
 
     /// The Swidux sign-in recipe identifies first and aliases second. With the
     /// SDK's `andIdentify: true` default that re-identified the device back to
-    /// its anonymous ID, so every later event lost the user.
+    /// its anonymous ID, so every later event lost the user. The alias must
+    /// point at the ID the anonymous events were actually sent under.
     @Test func aliasAfterIdentifyKeepsTheUser() async throws {
         let token = UUID().uuidString
         let service = Self.makeService(token: token)
         let userID = "u-\(UUID().uuidString)"
 
+        await service.track(AnalyticsEvent("anonymous"))
         await service.identify(userID: userID, properties: [:])
         await service.alias(newID: userID, previousID: nil)
         await service.track(AnalyticsEvent("after-alias"))
         await service.flush()
 
+        let anonymous = try #require(Self.properties(ofEvent: "anonymous", token: token).first)
+        let anonymousID = try #require(anonymous["distinct_id"] as? String)
         let event = try #require(Self.properties(ofEvent: "after-alias", token: token).first)
         #expect(event["distinct_id"] as? String == userID)
         let alias = try #require(Self.properties(ofEvent: "$create_alias", token: token).first)
         #expect(alias["alias"] as? String == userID)
-        #expect(alias["distinct_id"] as? String != userID)
+        #expect(alias["distinct_id"] as? String == anonymousID)
+    }
+
+    /// Aliasing before any identify links the anonymous device ID as sent.
+    @Test func aliasBeforeIdentifyUsesTheAnonymousID() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        let userID = "u-\(UUID().uuidString)"
+
+        await service.track(AnalyticsEvent("anonymous"))
+        await service.alias(newID: userID, previousID: nil)
+        await service.flush()
+
+        let anonymous = try #require(Self.properties(ofEvent: "anonymous", token: token).first)
+        let alias = try #require(Self.properties(ofEvent: "$create_alias", token: token).first)
+        #expect(alias["distinct_id"] as? String == anonymous["distinct_id"] as? String)
     }
 
     /// The SDK stamps queued People updates with whoever is identified at
     /// flush time, so switching users without a flush sent A's `$set` as B's.
+    /// Nothing may be sent twice either: the SDK sets no `$insert_id`, so
+    /// Mixpanel keeps duplicates.
     @Test func profileUpdatesStayWithTheirOwnUser() async throws {
         let token = UUID().uuidString
         let service = Self.makeService(token: token)
@@ -450,15 +514,20 @@ struct MixpanelCapturePipelineTests {
         let userB = "b-\(UUID().uuidString)"
 
         await service.identify(userID: userA, properties: ["plan": .string("a")])
+        await service.track(AnalyticsEvent("as-a"))
         await service.identify(userID: userB, properties: ["plan": .string("b")])
+        await service.alias(newID: "alias-\(UUID().uuidString)", previousID: nil)
         await service.flush()
 
         let sets = MixpanelCaptureURLProtocol.engagePayloads(token: token)
-            .filter { $0["$set"] != nil }
-        let planA = try #require(sets.first { ($0["$set"] as? [String: Any])?["plan"] as? String == "a" })
-        let planB = try #require(sets.first { ($0["$set"] as? [String: Any])?["plan"] as? String == "b" })
-        #expect(planA["$distinct_id"] as? String == userA)
-        #expect(planB["$distinct_id"] as? String == userB)
+            .compactMap { payload -> String? in
+                guard let plan = (payload["$set"] as? [String: Any])?["plan"] as? String else { return nil }
+                return "\(plan)->\(payload["$distinct_id"] as? String ?? "?")"
+            }
+        #expect(sets.sorted() == ["a->\(userA)", "b->\(userB)"])
+        let asA = Self.properties(ofEvent: "as-a", token: token)
+        #expect(asA.count == 1)
+        #expect(asA.first?["distinct_id"] as? String == userA)
     }
 
     // MARK: - Values on the wire

@@ -79,11 +79,11 @@ Forwards to `MixpanelInstance.track(event:properties:)`. Empty `properties` are 
 
 Forwards to `MixpanelInstance.identify(distinctId:)`, then sets `properties` on the user's profile with `instance.people.set(properties:)`; properties that translate to null are unset instead. Empty `userID`s are dropped entirely: the SDK rejects blank distinct IDs, and forwarding the people update anyway would attribute it to the previous identity. Calls made while opted out are dropped.
 
-When the user changes, the previous user's queued profile updates are sent first — the SDK attributes queued updates to whoever is identified when they are sent.
+When the user changes, everything queued for the previous user is sent first, and `identify` waits for it — the SDK attributes queued profile updates to whoever is identified when they are sent.
 
 #### `alias(newID:previousID:) async`
 
-Forwards to `MixpanelInstance.createAlias(_:distinctId:andIdentify:)` with `andIdentify: false`, so the alias never changes who is identified locally — the SDK default would re-identify the device as `previousID`, undoing a preceding sign-in. When `previousID` is `nil`, the device's anonymous ID is used. Empty `newID`s are dropped, mirroring the SDK's blank-alias rejection. Projects on Mixpanel's Simplified ID Merge ignore aliases; see <doc:HowToImplementService>.
+Forwards to `MixpanelInstance.createAlias(_:distinctId:andIdentify:)` with `andIdentify: false`, so the alias never changes who is identified locally — the SDK default would re-identify the device as `previousID`, undoing a preceding sign-in. When `previousID` is `nil`, the anonymous distinct ID the device's events were sent under is used. The SDK sends its queue after every alias, and `alias` waits for that so the send can't overlap the next flush and duplicate rows. Empty `newID`s are dropped, mirroring the SDK's blank-alias rejection. Projects on Mixpanel's Simplified ID Merge ignore aliases; see <doc:HowToImplementService>.
 
 #### `reset() async`
 
@@ -91,7 +91,7 @@ Sends everything queued and waits for it, then forwards to `MixpanelInstance.res
 
 #### `flush() async`
 
-Forwards to `MixpanelInstance.flush(performFullFlush: true, completion:)` and awaits its callback, so the whole queue is sent rather than the SDK's default 50-record batch. Each of the SDK's three queues (events, People, groups) is one request bounded at 120 seconds, so a hung server can hold this for minutes — use the plugin's `flush(timeout:)` on shutdown paths. The SDK delivers the callback on the main queue; never block the main thread waiting for it. The plugin's own `flush()` is the deterministic sync point in tests — it awaits all pending fire-and-forget tracking tasks and then calls this.
+Forwards to `MixpanelInstance.flush(performFullFlush: true, completion:)` and awaits its callback, so the whole queue is sent rather than the SDK's default 50-record batch. The SDK sends one request per 50 records, each bounded at 120 seconds, and stops at the first failure, so a hung server can hold this for minutes — use the plugin's `flush(timeout:)` on shutdown paths. The SDK delivers the callback on the main queue; never block the main thread waiting for it. The plugin's own `flush()` is the deterministic sync point in tests — it awaits all pending fire-and-forget tracking tasks and then calls this.
 
 #### `setOptedOut(_:) async`
 
@@ -105,11 +105,11 @@ It does **not** delete the user's Mixpanel profile. The SDK's own opt-out queues
 
 #### `optInTracking(distinctID:properties:) async`
 
-Forwards to `MixpanelInstance.optInTracking(distinctId:properties:)` and returns once the SDK has applied it, so an `identify` issued straight afterwards is honored. The SDK identifies the user as `distinctID` (when non-empty) and records a `$opt_in` event carrying `properties` — they are event properties, not profile properties. The event is queued a moment after the opt-in takes effect, so a `flush()` issued straight away may leave it for the next one. When the user is already opted in, no `$opt_in` is sent and only the `distinctID` identify happens.
+Forwards to `MixpanelInstance.optInTracking(distinctId:properties:)` and returns once the SDK has applied it, so an `identify` issued straight afterwards is honored. The SDK identifies the user as `distinctID` (when non-empty) and records a `$opt_in` event carrying `properties` — they are event properties, not profile properties. The event is queued a moment after the opt-in takes effect, so a `flush()` issued straight away may leave it for the next one. When the user is already opted in, no `$opt_in` is sent and only the `distinctID` identify happens. Before opting in, anything the SDK kept queued while opted out is discarded — only a stale profile deletion or unattributed leftovers can be there. The wait for the SDK is bounded at 30 seconds; hitting the bound logs a fault.
 
 #### `hasOptedOutTracking() async -> Bool`
 
-Forwards to `MixpanelInstance.hasOptedOutTracking()`, after waiting for the SDK to apply `optOutTrackingByDefault` — until it does, the SDK reports a first-launch user as opted in.
+Forwards to `MixpanelInstance.hasOptedOutTracking()`. On a first launch with `optOutTrackingByDefault`, it first waits for the SDK to apply the default — until it does, the SDK reports the user as opted in. (Not with `init(instance:)`, which doesn't know the instance's options.)
 
 #### `setLoggingEnabled(_:) async`
 

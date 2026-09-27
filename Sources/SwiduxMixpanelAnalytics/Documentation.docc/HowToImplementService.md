@@ -18,7 +18,7 @@ Defaults match the Mixpanel SDK's `MixpanelOptions`: `flushInterval: 60`, `optOu
 
 > Important: The Mixpanel SDK keys instances by `instanceName` (falling back to `token`). Constructing a second service with the same name returns the *existing* SDK instance and silently ignores the new options. Construct the service once, where the store is configured — not per view, per preview, or per test.
 
-> Important: `serverURL` must be an absolute URL with a scheme and host. Given anything else, the SDK sends nothing and every `flush()` waits out its 120-second request timeout; the adapter asserts on this in Debug builds.
+> Important: `serverURL` must be an absolute URL with a scheme and host. Requests to anything else fail, and a string that isn't a URL at all makes every `flush()` wait out the SDK's 120-second request timeout. The adapter asserts on this in Debug builds.
 
 ## EU / India data residency
 
@@ -84,7 +84,7 @@ The SDK calls the closure synchronously on every launch, on `reset()`, and on op
 let service = MixpanelAnalyticsService(token: "your-token", flushInterval: 30)
 ```
 
-`0` disables the timer. The plugin's `flush()` (called on app shutdown) bypasses the interval and sends everything queued, waiting for the network. Each of the SDK's three queues is one request bounded at 120 seconds, so use the plugin's `flush(timeout:)` on shutdown paths.
+`0` disables the timer. The plugin's `flush()` (called on app shutdown) bypasses the interval and sends everything queued, waiting for the network. The SDK sends one request per 50 records, each bounded at 120 seconds, so use the plugin's `flush(timeout:)` on shutdown paths.
 
 ## Diagnostic logging
 
@@ -104,11 +104,11 @@ Opt out of server-side IP-based geo resolution when your privacy policy forbids 
 
 ## Aliases and ID merge
 
-Projects on Mixpanel's Simplified ID Merge (check your project's Identity Merge setting) ignore aliases: `identify` alone links the anonymous device to the signed-in user. Dispatch `.analytics(.alias(newID:previousID:))` only for projects on Original ID Merge. There, a `nil` `previousID` aliases the device's anonymous ID, and the alias never changes who is identified locally.
+Projects on Mixpanel's Simplified ID Merge (check your project's Identity Merge setting) ignore aliases: `identify` alone links the anonymous device to the signed-in user. Dispatch `.analytics(.alias(newID:previousID:))` only for projects on Original ID Merge. There, a `nil` `previousID` aliases the anonymous distinct ID the device's events were sent under, and the alias never changes who is identified locally.
 
 ## Switching users
 
-When `identify` moves to a different user, the adapter first hands the previous user's queued profile updates to the network — the SDK otherwise sends every queued update under whoever is identified at send time. Dispatching `.analytics(.reset)` on sign-out is still the right shape; it also clears super properties set at runtime (the ones passed to the initializer come back automatically).
+When `identify` moves to a different user, the adapter first sends everything queued for the previous user and waits for it — the SDK otherwise sends every queued profile update under whoever is identified at send time. Dispatching `.analytics(.reset)` on sign-out is still the right shape; it also clears super properties set at runtime (the ones passed to the initializer come back automatically).
 
 ## Exclude properties
 
