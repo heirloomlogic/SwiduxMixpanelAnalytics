@@ -21,8 +21,9 @@ import Testing
 ///
 /// Determinism levers (all mandatory, applied in ``makeService``):
 /// - `token: UUID().uuidString` per test — the global recorder is shared, but
-///   assertions filter captured requests by this test's token, so the suite is
-///   parallel-safe without `.serialized`.
+///   assertions filter captured requests by this test's token, so cross-test
+///   contamination (one test reading another's events) can't happen even
+///   when tests run concurrently.
 /// - `instanceName: "capture-\(UUID())"` — the SDK persists per-instance event
 ///   queues on disk; a UUID name guarantees a fresh queue and identity each run
 ///   (the same trick `deviceIdProviderSeedsDistinctID` relies on).
@@ -35,7 +36,21 @@ import Testing
 ///   `true`, so captured bodies are directly JSON-decodable.
 /// - `flushInterval: 3600` — nothing sends until an explicit `flush()`; the
 ///   stub responds synchronously, so no sleeps or polling are needed.
-@Suite("MixpanelCapturePipeline")
+///
+/// `.serialized`: token-filtering only rules out reading the *wrong* event —
+/// it says nothing about *losing* one. `URLProtocol.registerClass` is global,
+/// process-wide, mutable state, and every test here spins up its own
+/// `MixpanelInstance` that flushes through the same `URLSession.shared`. On
+/// macOS's `swift test` that combination is reliable even with every test in
+/// this suite running concurrently. On the iOS Simulator `test-ios` CI leg,
+/// running this suite's tests concurrently with each other (and alongside
+/// the many real, uncaptured Mixpanel-instance flushes in the sibling
+/// `MixpanelAnalyticsServiceTests`) intermittently drops a captured request
+/// — the assertion sees an empty capture array even though `flush()` already
+/// returned normally, not a slow/missing response. Serializing just this
+/// suite removes the concurrent pressure on that shared global state without
+/// slowing down anything else in the target.
+@Suite("MixpanelCapturePipeline", .serialized)
 struct MixpanelCapturePipelineTests {
     /// A single outbound request captured off the wire.
     struct CapturedRequest: Sendable {
