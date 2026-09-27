@@ -74,6 +74,8 @@ Forwards to `MixpanelInstance.identify(distinctId:)`, then — if `properties` i
 
 Forwards to `MixpanelInstance.createAlias(_:distinctId:)`. When `previousID` is `nil`, the call uses `instance.distinctId` as the source ID, matching Mixpanel's recommended anonymous-to-identified aliasing flow. Empty `newID`s are dropped, mirroring the SDK's blank-alias rejection.
 
+> Warning: The `previousID: nil` path reads `instance.distinctId` unsynchronized — the SDK only writes it under an internal lock, on its own queue, and exposes no synchronized way to read it back (`getDistinctId()` has the same gap). A call to `identify(userID:properties:)` immediately followed by `alias(newID:previousID: nil)` races that write. Pass an explicit `previousID` to avoid it; see the doc comment on ``MixpanelAnalyticsService/alias(newID:previousID:)`` for the full explanation.
+
 #### `reset() async`
 
 Forwards to `MixpanelInstance.reset(completion:)` and awaits its callback. Clears Mixpanel's local distinct ID, super properties, and identity.
