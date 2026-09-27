@@ -14,9 +14,11 @@ For most apps:
 let service = MixpanelAnalyticsService(token: "your-token")
 ```
 
-Defaults match the Mixpanel SDK's `MixpanelOptions`: `flushInterval: 60`, `optOutTrackingByDefault: false`, gzip on, IDFV-based distinct ID, `trackAutomaticEvents: false`. The initializer is the same on every platform.
+Defaults match the Mixpanel SDK's `MixpanelOptions`: `flushInterval: 60`, `optOutTrackingByDefault: false`, gzip on, a random-UUID anonymous ID, `trackAutomaticEvents: false`. The initializer is the same on every platform.
 
 > Important: The Mixpanel SDK keys instances by `instanceName` (falling back to `token`). Constructing a second service with the same name returns the *existing* SDK instance and silently ignores the new options. Construct the service once, where the store is configured — not per view, per preview, or per test.
+
+> Important: `serverURL` must be an absolute URL with a scheme and host. Given anything else, the SDK sends nothing and every `flush()` waits out its 120-second request timeout; the adapter asserts on this in Debug builds.
 
 ## EU / India data residency
 
@@ -33,7 +35,7 @@ Region is fixed at construction; the service has no per-event region knob.
 
 ## Opt-out by default
 
-If your jurisdiction requires explicit opt-in, construct the service in opted-out mode and flip it at runtime when the user consents:
+If your jurisdiction requires explicit opt-in, construct the service in opted-out mode and hand ``MixpanelAnalyticsService/setOptedOut(_:)`` to the plugin as its consent hook:
 
 ```swift
 let service = MixpanelAnalyticsService(
@@ -41,18 +43,26 @@ let service = MixpanelAnalyticsService(
     optOutTrackingByDefault: true
 )
 
-// later, when the user opts in:
-await service.optInTracking(distinctID: currentUserID)
-
-// to opt out again:
-await service.optOutTracking()
+AnalyticsPlugin(
+    state: \.analytics,
+    action: AppAction.analytics,
+    extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
+    service: service,
+    onConsentChange: { await service.setOptedOut($0) }
+)
 ```
 
-`optInTracking` / `optOutTracking` / ``MixpanelAnalyticsService/hasOptedOutTracking()`` cover the GDPR round-trip without forcing the app to touch Mixpanel directly. Pair these with the plugin's own opt-out flag if you maintain one — both must be opted in for events to be sent.
+From then on `store.send(.analytics(.setOptedOut(_:)))` switches both the plugin's gate and Mixpanel's own. Seed the plugin's `AnalyticsState(isOptedOut:)` from the consent your app stores, and dispatch that value once at launch — see <doc:GettingStarted>.
+
+Both directions return only once the SDK has applied them, so an `identify` dispatched straight after consent is honored and one dispatched straight after withdrawal is dropped. Mixpanel remembers the choice across launches; `optOutTrackingByDefault` only decides the state before the user has chosen.
+
+Opting out sends what was recorded while the user consented, then clears the local identity. It does **not** delete the user's Mixpanel profile or data — the SDK's own attempt at that is never sent, and the adapter suppresses it because it would later delete the next user's profile instead. Erase data with Mixpanel's GDPR deletion API from your server.
+
+`optInTracking(distinctID:properties:)` and `optOutTracking()` remain available for apps that don't route consent through the plugin.
 
 ## Custom device IDs
 
-By default Mixpanel derives the anonymous device ID from the IDFV (or a random UUID with `useUniqueDistinctId: true`), which does not survive app reinstall. If your app maintains its own stable device identity — for example a Keychain-minted UUID hydrated into state at launch — hand it to the SDK with `deviceIdProvider:`:
+By default Mixpanel makes the anonymous device ID a random UUID, which does not survive app reinstall. `useUniqueDistinctId: true` swaps it for the device's own identifier — the IDFV on iOS, but the Mac's **hardware serial number** on macOS, which most privacy policies won't allow. If your app maintains its own stable device identity — for example a Keychain-minted UUID hydrated into state at launch — hand it to the SDK with `deviceIdProvider:`:
 
 ```swift
 // Cache the ID at launch; the provider must not do I/O inline.
@@ -64,7 +74,7 @@ let service = MixpanelAnalyticsService(
 )
 ```
 
-The SDK calls the closure synchronously while holding internal locks — at first launch (when no persisted identity exists), on `reset()`, and on opt-out — so it must be fast: return a cached value, never Keychain or network reads. Return `nil` to fall back to the SDK default. Returning the same value every call keeps the device ID stable across resets; returning a fresh value gives ephemeral identities.
+The SDK calls the closure synchronously on every launch, on `reset()`, and on opt-out, some of those times while holding its internal lock — so it must be fast: return a cached value, never Keychain or network reads, and never call back into the service or Mixpanel, which deadlocks. Return `nil` or a blank string to fall back to the SDK default. Returning the same value every call keeps the device ID stable across resets; returning a fresh value gives ephemeral identities.
 
 > Note: Adding a `deviceIdProvider` to an app that already shipped with the default device ID changes the anonymous identity on that device. The SDK logs a warning when the provided value differs from the persisted one.
 
@@ -74,7 +84,7 @@ The SDK calls the closure synchronously while holding internal locks — at firs
 let service = MixpanelAnalyticsService(token: "your-token", flushInterval: 30)
 ```
 
-The plugin's `flush()` (called on app shutdown) bypasses this and forces a synchronous drain.
+`0` disables the timer. The plugin's `flush()` (called on app shutdown) bypasses the interval and sends everything queued, waiting for the network. Each of the SDK's three queues is one request bounded at 120 seconds, so use the plugin's `flush(timeout:)` on shutdown paths.
 
 ## Diagnostic logging
 
@@ -82,7 +92,7 @@ The plugin's `flush()` (called on app shutdown) bypasses this and forces a synch
 await service.setLoggingEnabled(true)
 ```
 
-Enables the Mixpanel SDK's internal logging — useful when verifying integration in development. Disable in release builds.
+Enables the Mixpanel SDK's internal logging — useful when verifying integration in development. Disable in release builds. Set it once at launch: the SDK doesn't synchronize this property.
 
 ## Geo by IP
 
@@ -90,7 +100,15 @@ Enables the Mixpanel SDK's internal logging — useful when verifying integratio
 await service.setUseIPAddressForGeoLocation(false)
 ```
 
-Opt out of server-side IP-based geo resolution when your privacy policy forbids it.
+Opt out of server-side IP-based geo resolution when your privacy policy forbids it. Set it once at launch, for the same reason as logging.
+
+## Aliases and ID merge
+
+Projects on Mixpanel's Simplified ID Merge (check your project's Identity Merge setting) ignore aliases: `identify` alone links the anonymous device to the signed-in user. Dispatch `.analytics(.alias(newID:previousID:))` only for projects on Original ID Merge. There, a `nil` `previousID` aliases the device's anonymous ID, and the alias never changes who is identified locally.
+
+## Switching users
+
+When `identify` moves to a different user, the adapter first hands the previous user's queued profile updates to the network — the SDK otherwise sends every queued update under whoever is identified at send time. Dispatching `.analytics(.reset)` on sign-out is still the right shape; it also clears super properties set at runtime (the ones passed to the initializer come back automatically).
 
 ## Exclude properties
 

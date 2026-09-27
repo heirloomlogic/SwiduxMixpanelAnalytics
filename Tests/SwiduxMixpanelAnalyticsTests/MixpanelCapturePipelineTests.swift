@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import Mixpanel
 import SwiduxAnalytics
 import Synchronization
 import Testing
@@ -35,7 +36,7 @@ import Testing
 ///   `true`, so captured bodies are directly JSON-decodable.
 /// - `flushInterval: 3600` — nothing sends until an explicit `flush()`; the
 ///   stub responds synchronously, so no sleeps or polling are needed.
-@Suite("MixpanelCapturePipeline")
+@Suite("MixpanelCapturePipeline", .timeLimit(.minutes(1)))
 struct MixpanelCapturePipelineTests {
     /// A single outbound request captured off the wire.
     struct CapturedRequest: Sendable {
@@ -156,20 +157,35 @@ struct MixpanelCapturePipelineTests {
     /// the suite doc comment is applied here.
     private static func makeService(
         token: String,
+        instanceName: String = "capture-\(UUID().uuidString)",
         excludeProperties: Set<String> = [],
-        optOutTrackingByDefault: Bool = false
+        optOutTrackingByDefault: Bool = false,
+        superProperties: [String: AnalyticsValue]? = nil
     ) -> MixpanelAnalyticsService {
         _ = MixpanelCaptureURLProtocol.registerOnce
         return MixpanelAnalyticsService(
             token: token,
             trackAutomaticEvents: false,
             flushInterval: 3600,
-            instanceName: "capture-\(UUID().uuidString)",
+            instanceName: instanceName,
             optOutTrackingByDefault: optOutTrackingByDefault,
+            superProperties: superProperties,
             serverURL: "https://\(MixpanelCaptureURLProtocol.host)",
             useGzipCompression: false,
             excludeProperties: excludeProperties
         )
+    }
+
+    /// Properties of every captured `/track/` event named `name`.
+    private static func properties(ofEvent name: String, token: String) -> [[String: Any]] {
+        MixpanelCaptureURLProtocol.trackEvents(token: token)
+            .filter { $0["event"] as? String == name }
+            .compactMap { $0["properties"] as? [String: Any] }
+    }
+
+    /// Names of every captured `/track/` event, in capture order.
+    private static func eventNames(token: String) -> [String] {
+        MixpanelCaptureURLProtocol.trackEvents(token: token).compactMap { $0["event"] as? String }
     }
 
     /// Excluded keys must never appear in `/track/` bodies. The surviving
@@ -235,15 +251,9 @@ struct MixpanelCapturePipelineTests {
         await service.flush()
         #expect(MixpanelCaptureURLProtocol.trackEvents(token: token).isEmpty)
 
+        // No wait here: `optInTracking()` returns only once the SDK's flag has
+        // actually flipped, so the `flush()` below is not silently skipped.
         await service.optInTracking()
-        // `optInTracking()` clears the opt-out flag asynchronously on the SDK's
-        // serial tracking queue, but `flush()` reads that flag *synchronously*
-        // on the calling thread and no-ops while it is still set. Wait for the
-        // flip to be observable before tracking/flushing — a deterministic,
-        // one-way barrier (the flag never flips back here), not a timed sleep.
-        while await service.hasOptedOutTracking() {
-            await Task.yield()
-        }
         await service.track(AnalyticsEvent("delivered"))
         await service.flush()
 
@@ -252,5 +262,251 @@ struct MixpanelCapturePipelineTests {
         // Not `count == 1`: opt-in itself emits an `$opt_in` event.
         #expect(names.contains("delivered"))
         #expect(!names.contains("dropped"))
+    }
+
+    // MARK: - Queue draining
+
+    /// `flush()` is the plugin's shutdown drain, so it must send the whole
+    /// queue — not one 50-record batch (the SDK's default partial flush).
+    @Test func flushDrainsTheWholeQueue() async {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        for index in 0..<120 {
+            await service.track(AnalyticsEvent("bulk", ["index": .int(index)]))
+        }
+        await service.flush()
+
+        #expect(Self.properties(ofEvent: "bulk", token: token).count == 120)
+    }
+
+    /// The SDK's `reset()` flushes one partial batch and then deletes every
+    /// queued row. Events recorded before a logout must still be delivered.
+    @Test func resetDoesNotDiscardQueuedEvents() async {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        for index in 0..<120 {
+            await service.track(AnalyticsEvent("before-logout", ["index": .int(index)]))
+        }
+        await service.reset()
+        await service.flush()
+
+        #expect(Self.properties(ofEvent: "before-logout", token: token).count == 120)
+    }
+
+    // MARK: - Consent
+
+    /// The SDK applies opt-in on its own queue while `identify` checks the
+    /// flag on the caller's thread, so an identify issued straight after an
+    /// opt-in used to be dropped silently.
+    @Test func identifyStraightAfterOptInIsHonored() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token, optOutTrackingByDefault: true)
+        let userID = "u-\(UUID().uuidString)"
+
+        await service.optInTracking()
+        await service.identify(userID: userID, properties: [:])
+        await service.track(AnalyticsEvent("after-consent"))
+        await service.flush()
+
+        let event = try #require(Self.properties(ofEvent: "after-consent", token: token).first)
+        #expect(event["distinct_id"] as? String == userID)
+    }
+
+    /// The mirror image: an identify straight after an opt-out must not
+    /// re-identify the device or queue a profile update that ships later.
+    @Test func identifyStraightAfterOptOutIsDropped() async {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        let userID = "carol-\(UUID().uuidString)"
+
+        await service.optOutTracking()
+        await service.identify(userID: userID, properties: ["email": .string("c@d.e")])
+        await service.optInTracking()
+        await service.track(AnalyticsEvent("after-consent"))
+        await service.flush()
+
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(!engage.contains { $0["$distinct_id"] as? String == userID })
+        let events = Self.properties(ofEvent: "after-consent", token: token)
+        #expect(!events.isEmpty)
+        #expect(!events.contains { $0["distinct_id"] as? String == userID })
+    }
+
+    /// `hasOptedOutTracking()` must reflect `optOutTrackingByDefault` from the
+    /// first call, not after the SDK's queue gets round to applying it.
+    @Test func optOutByDefaultIsVisibleImmediately() async {
+        let service = Self.makeService(token: UUID().uuidString, optOutTrackingByDefault: true)
+        #expect(await service.hasOptedOutTracking())
+    }
+
+    /// The SDK's opt-out queues a `$delete` for the current user, but stores it
+    /// unattributed; the next identify adopted it and deleted *that* user's
+    /// profile. No `$delete` may ever reach the wire for someone else.
+    @Test func optOutNeverDeletesTheNextUsersProfile() async {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        await service.identify(userID: "alice-\(UUID().uuidString)", properties: [:])
+        await service.flush()
+
+        await service.optOutTracking()
+        await service.optInTracking(distinctID: "bob-\(UUID().uuidString)")
+        await service.track(AnalyticsEvent("after-consent"))
+        await service.flush()
+
+        // Positive control: the flush really ran after opting back in.
+        #expect(!Self.properties(ofEvent: "after-consent", token: token).isEmpty)
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(!engage.contains { $0["$delete"] != nil })
+    }
+
+    /// Consent hooks fire on every `.setOptedOut` dispatch, so opting in a user
+    /// who is already opted in must not emit another `$opt_in` event.
+    @Test func optInIsIdempotent() async {
+        let token = UUID().uuidString
+        let optedIn = Self.makeService(token: token)
+        await optedIn.optInTracking()
+        await optedIn.optInTracking()
+        await optedIn.track(AnalyticsEvent("marker"))
+        await optedIn.flush()
+        #expect(!Self.eventNames(token: token).contains("$opt_in"))
+
+        let secondToken = UUID().uuidString
+        let optedOut = Self.makeService(token: secondToken, optOutTrackingByDefault: true)
+        await optedOut.optInTracking()
+        await optedOut.optInTracking()
+        // The SDK queues `$opt_in` just after flipping the flag the adapter
+        // waits on; the first flush's completion proves it is queued.
+        await optedOut.flush()
+        await optedOut.flush()
+        #expect(Self.eventNames(token: secondToken).filter { $0 == "$opt_in" }.count == 1)
+    }
+
+    /// The SDK's `reset()` erases the persisted opt-out flag, and the Swidux
+    /// plugin calls `reset()` on every opt-out — so a withdrawn user was
+    /// tracked again after the next cold launch.
+    @Test func optOutSurvivesResetAndRelaunch() async {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name)
+        await firstLaunch.optOutTracking()
+        await firstLaunch.reset()
+        await firstLaunch.flush()
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name)
+        #expect(await secondLaunch.hasOptedOutTracking())
+    }
+
+    // MARK: - Identity
+
+    /// Init-time super properties were dropped when the service started opted
+    /// out, and wiped for the rest of the session by `reset()`.
+    @Test func superPropertiesSurviveConsentAndReset() async {
+        let token = UUID().uuidString
+        let service = Self.makeService(
+            token: token,
+            optOutTrackingByDefault: true,
+            superProperties: ["flavor": .string("pro")]
+        )
+        await service.optInTracking()
+        await service.track(AnalyticsEvent("before-reset"))
+        await service.reset()
+        await service.track(AnalyticsEvent("after-reset"))
+        await service.flush()
+
+        for name in ["before-reset", "after-reset"] {
+            let events = Self.properties(ofEvent: name, token: token)
+            #expect(events.count == 1, "\(name)")
+            #expect(events.first?["flavor"] as? String == "pro", "\(name)")
+        }
+    }
+
+    /// The Swidux sign-in recipe identifies first and aliases second. With the
+    /// SDK's `andIdentify: true` default that re-identified the device back to
+    /// its anonymous ID, so every later event lost the user.
+    @Test func aliasAfterIdentifyKeepsTheUser() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        let userID = "u-\(UUID().uuidString)"
+
+        await service.identify(userID: userID, properties: [:])
+        await service.alias(newID: userID, previousID: nil)
+        await service.track(AnalyticsEvent("after-alias"))
+        await service.flush()
+
+        let event = try #require(Self.properties(ofEvent: "after-alias", token: token).first)
+        #expect(event["distinct_id"] as? String == userID)
+        let alias = try #require(Self.properties(ofEvent: "$create_alias", token: token).first)
+        #expect(alias["alias"] as? String == userID)
+        #expect(alias["distinct_id"] as? String != userID)
+    }
+
+    /// The SDK stamps queued People updates with whoever is identified at
+    /// flush time, so switching users without a flush sent A's `$set` as B's.
+    @Test func profileUpdatesStayWithTheirOwnUser() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        let userA = "a-\(UUID().uuidString)"
+        let userB = "b-\(UUID().uuidString)"
+
+        await service.identify(userID: userA, properties: ["plan": .string("a")])
+        await service.identify(userID: userB, properties: ["plan": .string("b")])
+        await service.flush()
+
+        let sets = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+            .filter { $0["$set"] != nil }
+        let planA = try #require(sets.first { ($0["$set"] as? [String: Any])?["plan"] as? String == "a" })
+        let planB = try #require(sets.first { ($0["$set"] as? [String: Any])?["plan"] as? String == "b" })
+        #expect(planA["$distinct_id"] as? String == userA)
+        #expect(planB["$distinct_id"] as? String == userB)
+    }
+
+    // MARK: - Values on the wire
+
+    /// The SDK sends every `NSNull` as the string `"<null>"` and non-finite
+    /// doubles as `"nan"` / `"inf"` (or crashes a Debug build), so none of
+    /// them may reach it.
+    @Test func nullAndNonFiniteValuesAreOmitted() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        await service.track(
+            AnalyticsEvent(
+                "values",
+                [
+                    "top_null": .null,
+                    "top_nan": .double(.nan),
+                    "list": .array([.null, .double(.infinity), .int(1)]),
+                    "object": .dict(["gone": .null, "nan": .double(-.infinity), "kept": .int(2)]),
+                ]
+            ))
+        await service.flush()
+
+        let event = try #require(Self.properties(ofEvent: "values", token: token).first)
+        #expect(event["top_null"] == nil)
+        #expect(event["top_nan"] == nil)
+        let list = try #require(event["list"] as? [Any])
+        #expect(list.count == 1)
+        #expect(list.first as? Int == 1)
+        let object = try #require(event["object"] as? [String: Any])
+        #expect(object.keys.sorted() == ["kept"])
+    }
+
+    /// A profile property that translates to null is unset rather than set to
+    /// the string `"<null>"`.
+    @Test func nullProfilePropertiesAreUnset() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        await service.identify(
+            userID: "u-\(UUID().uuidString)",
+            properties: ["plan": .string("pro"), "coupon": .null]
+        )
+        await service.flush()
+
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        let set = try #require(engage.compactMap { $0["$set"] as? [String: Any] }.first)
+        #expect(set["plan"] as? String == "pro")
+        #expect(set["coupon"] == nil)
+        let unset = try #require(engage.compactMap { $0["$unset"] as? [String] }.first)
+        #expect(unset == ["coupon"])
     }
 }

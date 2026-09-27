@@ -10,26 +10,27 @@ import Testing
 
 @testable import SwiduxMixpanelAnalytics
 
-/// Smoke tests for the real Mixpanel-backed service. The Mixpanel SDK queues
-/// to local disk when offline, so `flush()` resolves without a network round
-/// trip. We do not assert on outbound network state — only that the service's
-/// async surface returns and the `AnalyticsService` contract holds.
-@Suite("MixpanelAnalyticsService")
+/// Smoke tests for the real Mixpanel-backed service: the async surface
+/// resolves and the SDK is configured as asked. What reaches the wire is
+/// asserted in `MixpanelCapturePipelineTests`, whose interceptor these tests
+/// also send through, so nothing leaves the process.
+@Suite("MixpanelAnalyticsService", .timeLimit(.minutes(1)))
 struct MixpanelAnalyticsServiceTests {
+    private static let serverURL =
+        "https://\(MixpanelCapturePipelineTests.MixpanelCaptureURLProtocol.host)"
+
     /// Constructs a service via the public token init, with a unique
-    /// `instanceName` per test so suites can run in parallel.
-    private static func makeService(name: String = #function) -> MixpanelAnalyticsService {
-        MixpanelAnalyticsService(
+    /// `instanceName` per run so suites can run in parallel and never inherit
+    /// a previous run's persisted state.
+    private static func makeService(optOutTrackingByDefault: Bool = true) -> MixpanelAnalyticsService {
+        _ = MixpanelCapturePipelineTests.MixpanelCaptureURLProtocol.registerOnce
+        return MixpanelAnalyticsService(
             token: "test-token",
             trackAutomaticEvents: false,
-            instanceName: name,
-            optOutTrackingByDefault: true
+            instanceName: "smoke-\(UUID().uuidString)",
+            optOutTrackingByDefault: optOutTrackingByDefault,
+            serverURL: serverURL
         )
-    }
-
-    @Test func conformsToAnalyticsServiceAndSendable() {
-        let _: any AnalyticsService.Type = MixpanelAnalyticsService.self
-        let _: any Sendable.Type = MixpanelAnalyticsService.self
     }
 
     @Test func trackResolvesWithoutThrowing() async {
@@ -69,35 +70,19 @@ struct MixpanelAnalyticsServiceTests {
         }
     }
 
-    @Test func optOutAndOptInResolve() async {
-        // Mixpanel's opt-out flag is updated on the SDK's internal serial
-        // queue, so `hasOptedOutTracking()` can race the write — state
-        // semantics live in `MockMixpanelAnalyticsServiceTests`. Here we
-        // only verify the calls resolve without throwing.
+    /// Consent calls return only once the SDK has applied them.
+    @Test func consentStateIsSettledOnReturn() async {
         let service = Self.makeService()
-        await service.optInTracking(
-            distinctID: "u2",
-            properties: ["tier": .string("pro")])
-        await service.optOutTracking()
-        _ = await service.hasOptedOutTracking()
-    }
+        #expect(await service.hasOptedOutTracking())
 
-    /// `excludeProperties` filtering happens inside the SDK, so we can't
-    /// observe the dropped keys here — only that construction with the knob
-    /// set still tracks and flushes.
-    @Test func excludePropertiesInitResolves() async {
-        let service = MixpanelAnalyticsService(
-            token: "test-token",
-            instanceName: #function,
-            optOutTrackingByDefault: true,
-            excludeProperties: ["email", "full_name"]
-        )
-        await service.track(
-            AnalyticsEvent(
-                "smoke",
-                ["email": .string("a@b.c"), "amount": .int(1)]
-            ))
-        await service.flush()
+        await service.setOptedOut(false)
+        #expect(await service.hasOptedOutTracking() == false)
+
+        await service.optOutTracking()
+        #expect(await service.hasOptedOutTracking())
+
+        await service.optInTracking(distinctID: "u2", properties: ["tier": .string("pro")])
+        #expect(await service.hasOptedOutTracking() == false)
     }
 
     @Test func setLoggingAndGeoTogglesResolve() async {
@@ -117,7 +102,8 @@ struct MixpanelAnalyticsServiceTests {
             token: "test-token",
             instanceName: name,
             optOutTrackingByDefault: true,
-            deviceIdProvider: { customID }
+            deviceIdProvider: { customID },
+            serverURL: Self.serverURL
         )
         await service.flush()
         #expect(Mixpanel.getInstance(name: name)?.distinctId.hasSuffix(customID) == true)
@@ -133,7 +119,7 @@ struct MixpanelAnalyticsServiceTests {
     }
 
     /// Blank `newID`s are dropped to mirror the SDK's blank-alias rejection.
-    /// Also exercises the `previousID: nil` fallback to `instance.distinctId`.
+    /// Also exercises the `previousID: nil` fallback to the anonymous ID.
     @Test func aliasWithEmptyOrNilArgumentsResolves() async {
         let service = Self.makeService()
         await service.alias(newID: "", previousID: nil)
@@ -148,8 +134,9 @@ struct MixpanelAnalyticsServiceTests {
         let instance = Mixpanel.initialize(
             options: MixpanelOptions(
                 token: "test-token",
-                instanceName: "escape-hatch",
-                optOutTrackingByDefault: true
+                instanceName: "escape-hatch-\(UUID().uuidString)",
+                optOutTrackingByDefault: true,
+                serverURL: Self.serverURL
             )
         )
         let service = MixpanelAnalyticsService(instance: instance)
