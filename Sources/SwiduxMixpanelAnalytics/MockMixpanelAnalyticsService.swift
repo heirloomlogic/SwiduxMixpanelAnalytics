@@ -12,9 +12,10 @@ import SwiduxAnalytics
 /// awaiting the plugin's `flush()` sync point.
 ///
 /// Mirrors the Mixpanel-specific runtime surface on
-/// ``MixpanelAnalyticsService`` (opt-out / opt-in / logging / geo) so test
-/// code that exercises GDPR or diagnostic flows can verify the same calls
-/// against either the real adapter or the mock.
+/// ``MixpanelAnalyticsService`` (consent / logging / geo) so test code that
+/// exercises GDPR or diagnostic flows can verify the same calls against
+/// either the real adapter or the mock — including wiring
+/// ``setOptedOut(_:)`` as the plugin's `onConsentChange` hook.
 ///
 /// > Note: Unlike the real SDK, the mock keeps recording `track` / `identify`
 /// > calls while opted out — a recording mock should never lose history. To
@@ -27,6 +28,12 @@ public actor MockMixpanelAnalyticsService: AnalyticsService {
         public let userID: String
         /// People-level properties captured at identify time.
         public let properties: [String: AnalyticsValue]
+
+        /// Creates a record, e.g. as the expected value in an assertion.
+        public init(userID: String, properties: [String: AnalyticsValue] = [:]) {
+            self.userID = userID
+            self.properties = properties
+        }
     }
 
     /// Captured arguments from a single `alias(newID:previousID:)` call.
@@ -35,6 +42,12 @@ public actor MockMixpanelAnalyticsService: AnalyticsService {
         public let newID: String
         /// The previous distinct ID, or `nil` to use the current one.
         public let previousID: String?
+
+        /// Creates a record, e.g. as the expected value in an assertion.
+        public init(newID: String, previousID: String? = nil) {
+            self.newID = newID
+            self.previousID = previousID
+        }
     }
 
     /// Captured arguments from a single
@@ -42,8 +55,14 @@ public actor MockMixpanelAnalyticsService: AnalyticsService {
     public struct OptInCall: Sendable, Equatable {
         /// The distinct ID passed to opt-in, or `nil`.
         public let distinctID: String?
-        /// The people-profile properties recorded at opt-in, or `nil`.
+        /// The `$opt_in` event properties passed to opt-in, or `nil`.
         public let properties: [String: AnalyticsValue]?
+
+        /// Creates a record, e.g. as the expected value in an assertion.
+        public init(distinctID: String? = nil, properties: [String: AnalyticsValue]? = nil) {
+            self.distinctID = distinctID
+            self.properties = properties
+        }
     }
 
     /// Every event recorded by `track(_:)`, in dispatch order.
@@ -60,9 +79,9 @@ public actor MockMixpanelAnalyticsService: AnalyticsService {
     public private(set) var optOutCount = 0
     /// Every opt-in call recorded by `optInTracking(distinctID:properties:)`.
     public private(set) var optInCalls: [OptInCall] = []
-    /// The mock's current opt-out state, toggled by
-    /// `optOutTracking()` / `optInTracking(distinctID:properties:)`.
-    public private(set) var optedOut = false
+    /// The mock's current opt-out state, toggled by ``setOptedOut(_:)``,
+    /// `optOutTracking()`, and `optInTracking(distinctID:properties:)`.
+    public private(set) var optedOut: Bool
     /// Last value passed to `setLoggingEnabled(_:)`. `nil` if never set.
     public private(set) var loggingEnabled: Bool?
     /// Last value passed to `setUseIPAddressForGeoLocation(_:)`. `nil` if
@@ -70,7 +89,12 @@ public actor MockMixpanelAnalyticsService: AnalyticsService {
     public private(set) var useIPAddressForGeoLocation: Bool?
 
     /// Creates an empty recording service.
-    public init() {}
+    ///
+    /// - Parameter optedOut: The initial opt-out state, standing in for the
+    ///   real service's `optOutTrackingByDefault`. Defaults to `false`.
+    public init(optedOut: Bool = false) {
+        self.optedOut = optedOut
+    }
 
     /// Records the event in `trackedEvents`.
     public func track(_ event: AnalyticsEvent) async {
@@ -95,6 +119,16 @@ public actor MockMixpanelAnalyticsService: AnalyticsService {
     /// Increments `flushCount`.
     public func flush() async {
         flushCount += 1
+    }
+
+    /// Calls `optOutTracking()` for `true` and `optInTracking()` for `false`,
+    /// as the real service does.
+    public func setOptedOut(_ optedOut: Bool) async {
+        if optedOut {
+            await optOutTracking()
+        } else {
+            await optInTracking()
+        }
     }
 
     /// Increments `optOutCount` and flips `optedOut` to `true`.

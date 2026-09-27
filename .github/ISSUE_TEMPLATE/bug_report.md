@@ -16,8 +16,7 @@ What you expected to happen instead.
 
 ## Reproduction
 
-Minimal steps or a code snippet. If it involves event/property translation, include the
-`AnalyticsValue` you sent and what reached Mixpanel.
+Minimal steps or a code snippet. If it involves event/property translation, include the `AnalyticsValue` you sent and what reached Mixpanel.
 
 ```swift
 // e.g. the AnalyticsEvent / properties, or the MixpanelAnalyticsService configuration

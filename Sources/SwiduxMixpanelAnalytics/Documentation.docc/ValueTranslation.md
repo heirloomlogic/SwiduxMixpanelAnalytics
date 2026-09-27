@@ -14,17 +14,18 @@ Mixpanel's `MixpanelType` accepts `String`, `Int`, `UInt`, `Double`, `Float`, `B
 |---|---|
 | `.string(s)` | `s` (as `String`) |
 | `.int(n)` | `n` (as `Int`) |
-| `.double(d)` | `d` (as `Double`) |
+| `.double(d)` | `d` (as `Double`); omitted if NaN or infinite |
 | `.bool(b)` | `b` (as `Bool`) |
 | `.date(d)` | `d` (as `Date`) |
-| `.array(values)` | `[MixpanelType]` (each element recursively mapped) |
-| `.dict(entries)` | `[String: MixpanelType]` (each value recursively mapped) |
-| `.null` | `NSNull()` |
+| `.array(values)` | `[MixpanelType]` (each element recursively mapped; nulls omitted) |
+| `.dict(entries)` | `[String: MixpanelType]` (each value recursively mapped; nulls omitted) |
+| `.null` | omitted |
 
 ## Behavior notes
 
 - **`Int` vs `Double` are preserved.** `AnalyticsValue.int(5)` becomes `Int`; `.double(5)` becomes `Double`. Mixpanel's UI may render them similarly, but the wire types differ.
-- **`.null` becomes `NSNull()`.** Mixpanel treats `NSNull` as an explicit "null" value on the property. To omit a property entirely, don't include the key in your event's `properties` dict.
+- **Nulls are omitted.** The Mixpanel SDK cannot send a JSON `null`: it re-serializes queued data when flushing and turns every `NSNull` into the string `"<null>"`. So `.null` values — at the top level, in arrays, and in dictionaries — are left out rather than arriving as that string. On a user profile, `identify` *unsets* a property whose value is null.
+- **Non-finite doubles count as null.** NaN and ±infinity make the SDK assert (a crash in Debug builds) and otherwise arrive as the strings `"nan"` / `"inf"`, so they are omitted like `.null`.
 - **Empty event properties** (no keys) are forwarded as `nil` rather than an empty dictionary, mirroring Mixpanel's `track(event:properties:)` convention.
 - **Nested structures** flatten correctly: `.dict([.array([.int(1), .int(2)])])` translates to `[String: [MixpanelType]]` with primitive elements intact.
 
@@ -32,11 +33,11 @@ Mixpanel's `MixpanelType` accepts `String`, `Int`, `UInt`, `Double`, `Float`, `B
 
 ```swift
 extension AnalyticsValue {
-    public func toMixpanelType() -> MixpanelType
+    public func toMixpanelType() -> any MixpanelType  // `NSNull()` for null and non-finite values
 }
 
 extension Dictionary where Key == String, Value == AnalyticsValue {
-    public func toMixpanelProperties() -> Properties
+    public func toMixpanelProperties() -> Properties  // null entries omitted
 }
 ```
 
