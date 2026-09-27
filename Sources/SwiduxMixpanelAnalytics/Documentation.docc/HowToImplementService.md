@@ -33,7 +33,7 @@ Region is fixed at construction; the service has no per-event region knob.
 
 ## Opt-out by default
 
-If your jurisdiction requires explicit opt-in, construct the service in opted-out mode and flip it at runtime when the user consents:
+If your jurisdiction requires explicit opt-in, construct the service in opted-out mode and wire its ``MixpanelAnalyticsService/consentHandler`` into `AnalyticsPlugin`'s `onConsentChange:` when you build the plugin:
 
 ```swift
 let service = MixpanelAnalyticsService(
@@ -41,14 +41,20 @@ let service = MixpanelAnalyticsService(
     optOutTrackingByDefault: true
 )
 
-// later, when the user opts in:
-await service.optInTracking(distinctID: currentUserID)
-
-// to opt out again:
-await service.optOutTracking()
+AnalyticsPlugin(
+    state: \.analytics,
+    action: AppAction.analytics,
+    extractAction: { if case .analytics(let a) = $0 { return a }; return nil },
+    service: service,
+    onConsentChange: service.consentHandler
+)
 ```
 
-`optInTracking` / `optOutTracking` / ``MixpanelAnalyticsService/hasOptedOutTracking()`` cover the GDPR round-trip without forcing the app to touch Mixpanel directly. Pair these with the plugin's own opt-out flag if you maintain one — both must be opted in for events to be sent.
+`onConsentChange` fires on every `.setOptedOut` dispatch, so the plugin's own opt-out flag and the Mixpanel SDK's consent switch flip together — including on the initial `.setOptedOut(false)` an app dispatches once the user consents.
+
+Do not call ``MixpanelAnalyticsService/optOutTracking()`` / ``MixpanelAnalyticsService/optInTracking(distinctID:properties:)`` directly from the app and "pair" them with the plugin's flag by hand: the plugin's opt-out gate only stops events the plugin itself dispatches. The Mixpanel SDK still holds its own disk queue, and `.setOptedOut(true)` makes the plugin call `service.reset()` regardless — `MixpanelInstance.reset(completion:)` flushes that queue *before* clearing it, so anything queued since the last flush interval is sent at the exact moment the user withdraws consent. Wiring `onConsentChange` avoids this: the plugin awaits the hook before calling `reset()`, so the SDK has already opted out — and stopped flushing — by the time `reset()` runs.
+
+``MixpanelAnalyticsService/hasOptedOutTracking()`` remains useful for reading the SDK's own flag directly (e.g. in a settings screen that must reflect it before the store finishes configuring).
 
 ## Custom device IDs
 

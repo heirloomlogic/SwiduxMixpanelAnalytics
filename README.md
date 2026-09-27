@@ -39,7 +39,9 @@ let analyticsService = MixpanelAnalyticsService(
     optOutTrackingByDefault: true  // flip with analyticsService.optInTracking(...)
 )
 
-// 2. Plugin registration
+// 2. Plugin registration — `consentHandler` keeps Mixpanel's own opt-out
+//    switch in step with the plugin's, so withdrawing consent doesn't flush
+//    the SDK's queued events on the way out.
 plugins.register(
     AnalyticsPlugin(
         state: \.analytics,
@@ -47,7 +49,8 @@ plugins.register(
         extractAction: { if case .analytics(let a) = $0 { return a }; return nil },
         service: analyticsService,
         mapper: analyticsMapper,
-        identity: analyticsIdentity
+        identity: analyticsIdentity,
+        onConsentChange: analyticsService.consentHandler
     )
 )
 
@@ -71,7 +74,7 @@ Full DocC reference at https://heirloomlogic.github.io/SwiduxMixpanelAnalytics/d
 
 - Swift 6.2 / Xcode 26+
 - iOS 18 / macOS 15
-- [Swidux](https://github.com/HeirloomLogic/Swidux) 1.3+ (`SwiduxAnalytics` product)
+- [Swidux](https://github.com/HeirloomLogic/Swidux) 1.8+ (`SwiduxAnalytics` product) — 1.8.0 is where `AnalyticsPlugin.onConsentChange` shipped, which the Quickstart above wires through `consentHandler`
 - [Mixpanel Swift SDK](https://github.com/mixpanel/mixpanel-swift) 6.5.1+
 
 ## License

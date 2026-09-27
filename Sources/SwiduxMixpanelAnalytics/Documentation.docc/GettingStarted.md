@@ -58,7 +58,10 @@ import SwiduxAnalytics
 import SwiduxMixpanelAnalytics
 
 extension Store where State == AppState, Action == AppAction {
-    static func configured(analyticsService: some AnalyticsService) -> AppStore {
+    static func configured(
+        analyticsService: some AnalyticsService,
+        onConsentChange: (@Sendable (Bool) async -> Void)? = nil
+    ) -> AppStore {
         let plugins = PluginHost<AppState, AppAction>()
 
         plugins.register(
@@ -68,7 +71,8 @@ extension Store where State == AppState, Action == AppAction {
                 extractAction: { if case .analytics(let a) = $0 { return a }; return nil },
                 service: analyticsService,
                 mapper: analyticsMapper,
-                identity: analyticsIdentity
+                identity: analyticsIdentity,
+                onConsentChange: onConsentChange
             )
         )
 
@@ -80,6 +84,17 @@ extension Store where State == AppState, Action == AppAction {
     }
 }
 ```
+
+`configured` takes `analyticsService` as `some AnalyticsService` so it never has to name Mixpanel — but `onConsentChange` has to reach the Mixpanel SDK's own consent switch, and only the call site in `MyApp.init()` still holds the concrete `MixpanelAnalyticsService`. Pass its ``MixpanelAnalyticsService/consentHandler`` through:
+
+```swift
+_store = State(wrappedValue: AppStore.configured(
+    analyticsService: analyticsService,
+    onConsentChange: analyticsService.consentHandler
+))
+```
+
+Without this, opting out only stops events the plugin itself dispatches — the Mixpanel SDK still holds its own disk queue, and `.setOptedOut(true)` makes the plugin call `service.reset()`, whose `MixpanelInstance.reset(completion:)` flushes that queue *before* clearing it. `consentHandler` opts the SDK out first, so nothing is left to flush when `reset()` runs. See <doc:HowToImplementService>'s "Opt-out by default" section for the full explanation.
 
 That's it — the plugin will route mapped events through the service, re-fire `identify` whenever the `(userID, userProperties)` pair derived from state changes, and flush on your call to `store.analyticsPlugin.flush()` from `scenePhase == .background`.
 

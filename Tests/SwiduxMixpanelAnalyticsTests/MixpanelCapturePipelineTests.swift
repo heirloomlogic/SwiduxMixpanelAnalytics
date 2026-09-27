@@ -253,4 +253,41 @@ struct MixpanelCapturePipelineTests {
         #expect(names.contains("delivered"))
         #expect(!names.contains("dropped"))
     }
+
+    /// `reset()` forwards to `MixpanelInstance.reset(completion:)`, which
+    /// flushes the SDK's disk queue *before* clearing it — so a bare `reset()`
+    /// at withdrawal, with no prior opt-out, sends whatever was queued since
+    /// the last flush interval. This is the leak the docs used to invite by
+    /// telling apps to call `optOutTracking()` directly and "pair" it with
+    /// the plugin's flag by hand, instead of wiring `onConsentChange`.
+    @Test func resetAloneFlushesQueuedEventsAtWithdrawal() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+
+        await service.track(AnalyticsEvent("before_withdrawal"))
+        await service.reset()
+        await service.flush()
+
+        let names = MixpanelCaptureURLProtocol.trackEvents(token: token)
+            .compactMap { $0["event"] as? String }
+        #expect(names.contains("before_withdrawal"))
+    }
+
+    /// ``MixpanelAnalyticsService/consentHandler`` is the fix: calling it
+    /// with `true` before `reset()` — exactly the order `AnalyticsPlugin`'s
+    /// `onConsentChange` hook runs in — opts the SDK out first, so nothing is
+    /// left to flush when `reset()` runs.
+    @Test func consentHandlerPreventsResetFromFlushingQueuedEvents() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+
+        await service.track(AnalyticsEvent("before_withdrawal"))
+        await service.consentHandler(true)
+        await service.reset()
+        await service.flush()
+
+        let names = MixpanelCaptureURLProtocol.trackEvents(token: token)
+            .compactMap { $0["event"] as? String }
+        #expect(!names.contains("before_withdrawal"))
+    }
 }

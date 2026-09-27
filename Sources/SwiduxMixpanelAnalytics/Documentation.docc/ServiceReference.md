@@ -96,6 +96,10 @@ Forwards to `MixpanelInstance.optInTracking(distinctId:properties:)`. Optionally
 
 Forwards to `MixpanelInstance.hasOptedOutTracking()`.
 
+#### `consentHandler: @Sendable (Bool) async -> Void`
+
+Ready-made `AnalyticsPlugin` `onConsentChange` hook: calls `optOutTracking()` when `true`, `optInTracking()` when `false`. Hand it to the plugin's `onConsentChange:` parameter so the plugin's own consent gate and the Mixpanel SDK's consent switch flip together — see <doc:HowToImplementService>'s "Opt-out by default" section for why skipping this leaks queued events at withdrawal.
+
 #### `setLoggingEnabled(_:) async`
 
 Sets `MixpanelInstance.loggingEnabled`. Useful during development; disable in release.

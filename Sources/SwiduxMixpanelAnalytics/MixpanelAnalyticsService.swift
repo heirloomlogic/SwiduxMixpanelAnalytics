@@ -205,6 +205,34 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         instance.hasOptedOutTracking()
     }
 
+    /// Ready-made `onConsentChange` hook for `AnalyticsPlugin`: opts the
+    /// Mixpanel SDK out or back in to match the plugin's own consent gate.
+    ///
+    /// The plugin's gate only stops events *it* dispatches; the Mixpanel SDK
+    /// still holds its own disk queue and still collects automatic events
+    /// unless told otherwise. Handing this to the plugin's `onConsentChange:`
+    /// keeps the two switches in step with one argument, in the order that
+    /// matters: the plugin awaits this hook before calling `reset()` on
+    /// withdrawal, so the SDK is already opted out — and stops flushing
+    /// anything further — before `reset()` runs.
+    ///
+    /// ```swift
+    /// AnalyticsPlugin(
+    ///     ...,
+    ///     service: analyticsService,
+    ///     onConsentChange: analyticsService.consentHandler
+    /// )
+    /// ```
+    public var consentHandler: @Sendable (Bool) async -> Void {
+        { optedOut in
+            if optedOut {
+                await self.optOutTracking()
+            } else {
+                await self.optInTracking()
+            }
+        }
+    }
+
     /// Toggles the Mixpanel SDK's internal logging.
     public func setLoggingEnabled(_ enabled: Bool) async {
         instance.loggingEnabled = enabled
