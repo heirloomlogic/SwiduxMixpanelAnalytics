@@ -138,8 +138,23 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// Forwards to `MixpanelInstance.createAlias(_:distinctId:)`. When
     /// `previousID` is `nil`, the current `instance.distinctId` is used — the
     /// pattern Mixpanel's own documentation shows; `distinctId` is assigned
-    /// synchronously during SDK initialization, so it is never empty. Empty
-    /// `newID`s are dropped, mirroring the SDK's blank-alias rejection.
+    /// synchronously during SDK initialization, so it is never empty.
+    ///
+    /// > Warning: On the `previousID: nil` path, this reads
+    /// > `instance.distinctId` without going through the SDK's internal
+    /// > lock. The SDK only ever *writes* `distinctId` under that lock, on
+    /// > its own tracking queue (`identify`, `reset`, and opt-out all mutate
+    /// > it there), and offers no synchronized way to *read* it in return —
+    /// > `getDistinctId()` is the same unsynchronized `return distinctId`.
+    /// > A call to ``identify(userID:properties:)`` immediately followed by
+    /// > `alias(newID:previousID: nil)` therefore races that write: this can
+    /// > observe the pre-`identify` ID, or, `distinctId` being a non-atomic
+    /// > `String`, a torn value. The plugin serializes *calls* into this
+    /// > service, but `identify` returns before the SDK's queued write
+    /// > completes, so serialization alone does not close the window. Pass
+    /// > an explicit `previousID` to avoid it.
+    ///
+    /// Empty `newID`s are dropped, mirroring the SDK's blank-alias rejection.
     public func alias(newID: String, previousID: String?) async {
         guard !newID.isEmpty else { return }
         instance.createAlias(newID, distinctId: previousID ?? instance.distinctId)
