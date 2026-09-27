@@ -13,7 +13,13 @@ let package = Package(
         .library(name: "SwiduxMixpanelAnalytics", targets: ["SwiduxMixpanelAnalytics"])
     ],
     dependencies: [
-        .package(url: "https://github.com/HeirloomLogic/Swidux", from: "1.3.0"),
+        // 1.8.0 is the floor: it's where `AnalyticsPlugin.onConsentChange`
+        // shipped, and the docs (GettingStarted, HowToImplementService,
+        // README) wire it through `MixpanelAnalyticsService.consentHandler`.
+        // 1.3.0 was never actually built by anyone — this repo has no
+        // `Package.resolved` (see test.yml), so `from:` always floats to the
+        // newest 1.x for every consumer and CI run.
+        .package(url: "https://github.com/HeirloomLogic/Swidux", from: "1.8.0"),
         .package(url: "https://github.com/mixpanel/mixpanel-swift", from: "6.5.1"),
     ],
     targets: [
