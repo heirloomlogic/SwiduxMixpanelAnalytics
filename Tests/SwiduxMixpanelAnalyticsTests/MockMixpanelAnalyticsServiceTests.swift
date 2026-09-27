@@ -4,9 +4,8 @@
 //
 
 import SwiduxAnalytics
+import SwiduxMixpanelAnalytics
 import Testing
-
-@testable import SwiduxMixpanelAnalytics
 
 @Suite("MockMixpanelAnalyticsService")
 struct MockMixpanelAnalyticsServiceTests {
@@ -123,5 +122,18 @@ struct MockMixpanelAnalyticsServiceTests {
 
         #expect(await mock.loggingEnabled == true)
         #expect(await mock.useIPAddressForGeoLocation == false)
+    }
+
+    @Test func setOptedOutRoutesToOptOutAndOptIn() async {
+        let mock = MockMixpanelAnalyticsService(optedOut: true)
+        #expect(await mock.hasOptedOutTracking())
+
+        await mock.setOptedOut(false)
+        #expect(await mock.optInCalls == [.init()])
+        #expect(await mock.hasOptedOutTracking() == false)
+
+        await mock.setOptedOut(true)
+        #expect(await mock.optOutCount == 1)
+        #expect(await mock.hasOptedOutTracking())
     }
 }

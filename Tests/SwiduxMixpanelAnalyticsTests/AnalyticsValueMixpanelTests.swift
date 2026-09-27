@@ -98,17 +98,38 @@ struct AnalyticsValueMixpanelTests {
         #expect(doubleResult is Double)
     }
 
-    @Test func dictionaryExtensionMapsAllKeys() {
+    /// The SDK sends `NSNull` as the string `"<null>"`, so null entries are
+    /// omitted rather than translated.
+    @Test func dictionaryExtensionOmitsNullEntries() {
         let input: [String: AnalyticsValue] = [
             "amount": .int(10),
             "label": .string("hi"),
             "missing": .null,
+            "ratio": .double(.nan),
         ]
         let props = input.toMixpanelProperties()
-        #expect(props.count == 3)
+        #expect(props.keys.sorted() == ["amount", "label"])
         #expect((props["amount"] as? Int) == 10)
         #expect((props["label"] as? String) == "hi")
-        #expect(props["missing"] is NSNull)
+    }
+
+    /// The SDK asserts on non-finite doubles (crashing Debug builds), so they
+    /// translate to null.
+    @Test(arguments: [Double.nan, .infinity, -.infinity])
+    func nonFiniteDoubleMapsToNull(value: Double) {
+        #expect(AnalyticsValue.double(value).toMixpanelType() is NSNull)
+    }
+
+    @Test func nestedCollectionsOmitNulls() {
+        let value = AnalyticsValue.dict([
+            "list": .array([.null, .int(1), .double(.infinity)]),
+            "gone": .null,
+        ]).toMixpanelType()
+        let dict = value as? [String: MixpanelType]
+        #expect(dict?.keys.sorted() == ["list"])
+        let list = dict?["list"] as? [MixpanelType]
+        #expect(list?.count == 1)
+        #expect((list?.first as? Int) == 1)
     }
 
     @Test func emptyDictionaryRoundTrips() {

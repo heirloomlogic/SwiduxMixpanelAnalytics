@@ -37,7 +37,11 @@ struct MyApp: App {
             token: "your-mixpanel-token",
             optOutTrackingByDefault: true
         )
-        _store = State(wrappedValue: AppStore.configured(analyticsService: analyticsService))
+        _store = State(
+            wrappedValue: AppStore.configured(
+                analyticsService: analyticsService,
+                onConsentChange: { await analyticsService.setOptedOut($0) }
+            ))
     }
 
     var body: some Scene {
@@ -76,8 +80,11 @@ extension Store where State == AppState, Action == AppAction {
             )
         )
 
+        var initialState = AppState()
+        initialState.analytics = AnalyticsState(isOptedOut: ConsentStore.isOptedOut)
+
         return Store(
-            initialState: AppState(),
+            initialState: initialState,
             reducer: AppReducer().reduce,
             plugins: plugins
         )
@@ -85,18 +92,19 @@ extension Store where State == AppState, Action == AppAction {
 }
 ```
 
-`configured` takes `analyticsService` as `some AnalyticsService` so it never has to name Mixpanel — but `onConsentChange` has to reach the Mixpanel SDK's own consent switch, and only the call site in `MyApp.init()` still holds the concrete `MixpanelAnalyticsService`. Pass its ``MixpanelAnalyticsService/consentHandler`` through:
+That's it — the plugin will route mapped events through the service, re-fire `identify` whenever the `(userID, userProperties)` pair derived from state changes, and flush on your call to `store.analyticsPlugin.flush()` from `scenePhase == .background`.
+
+## Keep consent in one place
+
+The plugin's `isOptedOut` flag and Mixpanel's own opt-out must agree. `onConsentChange` keeps them in step whenever the app dispatches `.analytics(.setOptedOut(_:))`, but the plugin's flag starts from whatever `AppState()` gives it — `false` by default — while `optOutTrackingByDefault: true` starts Mixpanel opted out. Left like that, the plugin identifies the user at launch, Mixpanel drops the call, and the plugin never retries it.
+
+So keep the user's consent choice in your own storage (`ConsentStore` above stands in for it — `UserDefaults` is fine), seed `AnalyticsState(isOptedOut:)` from it as shown, and dispatch the stored value once at launch — from your root view's `.task` — so Mixpanel matches it:
 
 ```swift
-_store = State(wrappedValue: AppStore.configured(
-    analyticsService: analyticsService,
-    onConsentChange: analyticsService.consentHandler
-))
+.task { store.send(.analytics(.setOptedOut(ConsentStore.isOptedOut))) }
 ```
 
-Without this, opting out only stops events the plugin itself dispatches — the Mixpanel SDK still holds its own disk queue, and `.setOptedOut(true)` makes the plugin call `service.reset()`, whose `MixpanelInstance.reset(completion:)` flushes that queue *before* clearing it. `consentHandler` opts the SDK out first, so nothing is left to flush when `reset()` runs. See <doc:HowToImplementService>'s "Opt-out by default" section for the full explanation.
-
-That's it — the plugin will route mapped events through the service, re-fire `identify` whenever the `(userID, userProperties)` pair derived from state changes, and flush on your call to `store.analyticsPlugin.flush()` from `scenePhase == .background`.
+Repeating a consent value is harmless: opting in a user who already consented sends nothing, and opting out an opted-out user does nothing.
 
 ## Verify the wiring
 
