@@ -22,8 +22,7 @@ import Testing
 ///
 /// Determinism levers (all mandatory, applied in ``makeService``):
 /// - `token: UUID().uuidString` per test — the global recorder is shared, but
-///   assertions filter captured requests by this test's token, so the suite is
-///   parallel-safe without `.serialized`.
+///   assertions filter captured requests by this test's token to isolate results.
 /// - `instanceName: "capture-\(UUID())"` — the SDK persists per-instance event
 ///   queues on disk; a UUID name guarantees a fresh queue and identity each run
 ///   (the same trick `deviceIdProviderSeedsDistinctID` relies on).
@@ -36,7 +35,8 @@ import Testing
 ///   `true`, so captured bodies are directly JSON-decodable.
 /// - `flushInterval: 3600` — nothing sends until an explicit `flush()`; the
 ///   stub responds synchronously, so no sleeps or polling are needed.
-@Suite("MixpanelCapturePipeline", .timeLimit(.minutes(1)))
+/// Serialize capture tests to limit concurrent requests through the shared URL session.
+@Suite("MixpanelCapturePipeline", .serialized, .timeLimit(.minutes(1)))
 struct MixpanelCapturePipelineTests {
     /// A single outbound request captured off the wire.
     struct CapturedRequest: Sendable {
