@@ -13,7 +13,7 @@ let package = Package(
         .library(name: "SwiduxMixpanelAnalytics", targets: ["SwiduxMixpanelAnalytics"])
     ],
     dependencies: [
-        .package(url: "https://github.com/HeirloomLogic/Swidux", from: "1.10.0"),
+        .package(url: "https://github.com/HeirloomLogic/Swidux", branch: "issue-139-public-recording-analytics"),
         .package(url: "https://github.com/mixpanel/mixpanel-swift", from: "6.7.0"),
     ],
     targets: [

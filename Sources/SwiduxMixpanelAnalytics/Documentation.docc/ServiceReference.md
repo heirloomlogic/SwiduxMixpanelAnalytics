@@ -123,5 +123,5 @@ Sets `MixpanelInstance.useIPAddressForGeoLocation`. Disable when your privacy po
 
 - <doc:HowToImplementService>
 - <doc:ValueTranslation>
-- <doc:MockServiceReference>
+- <doc:RecordingServiceReference>
 - ``MixpanelAnalyticsService``

@@ -124,5 +124,5 @@ struct ContentView: View {
 ## Next Steps
 
 - <doc:HowToImplementService> — EU residency, opt-out by default, multiple Mixpanel projects, the `MixpanelInstance` escape hatch.
-- <doc:HowToPreviewAndTest> — Drive analytics state from previews and tests using ``MockMixpanelAnalyticsService``.
+- <doc:HowToPreviewAndTest> — Drive analytics state from previews and tests with a recorder instead of the SDK.
 - <doc:ValueTranslation> — How `AnalyticsValue` cases map onto Mixpanel `Properties`.
