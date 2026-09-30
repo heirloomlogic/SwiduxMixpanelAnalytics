@@ -51,37 +51,25 @@ struct RecordingMixpanelAnalyticsServiceTests {
 
     @Test func optOutAndOptInTrackTheState() async {
         let service = RecordingMixpanelAnalyticsService()
-        #expect(await service.hasOptedOutTracking() == false)
+        #expect(service.isOptedOut == false)
 
         await service.optOutTracking()
-        #expect(await service.hasOptedOutTracking())
+        #expect(service.isOptedOut)
 
         await service.optInTracking()
-        #expect(await service.hasOptedOutTracking() == false)
+        #expect(service.isOptedOut == false)
     }
 
     @Test func setOptedOutRoutesToOptOutAndOptIn() async {
         let service = RecordingMixpanelAnalyticsService(optedOut: true)
-        #expect(await service.hasOptedOutTracking())
+        #expect(service.isOptedOut)
 
         await service.setOptedOut(false)
         #expect(await service.optInCalls == [.init()])
-        #expect(await service.hasOptedOutTracking() == false)
+        #expect(service.isOptedOut == false)
 
         await service.setOptedOut(true)
-        #expect(await service.hasOptedOutTracking())
+        #expect(service.isOptedOut)
         #expect(await service.recorder.calls == [.setOptedOut(false), .setOptedOut(true)])
-    }
-
-    @Test func recordsLoggingAndGeoToggles() async {
-        let service = RecordingMixpanelAnalyticsService()
-        #expect(await service.loggingEnabled == nil)
-        #expect(await service.useIPAddressForGeoLocation == nil)
-
-        await service.setLoggingEnabled(true)
-        await service.setUseIPAddressForGeoLocation(false)
-
-        #expect(await service.loggingEnabled == true)
-        #expect(await service.useIPAddressForGeoLocation == false)
     }
 }

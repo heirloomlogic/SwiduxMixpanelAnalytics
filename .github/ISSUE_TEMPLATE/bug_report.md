@@ -32,4 +32,4 @@ Minimal steps or a code snippet. If it involves event/property translation, incl
 
 ## Additional context
 
-Logs (enable with `setLoggingEnabled(true)`), stack traces, or anything else that helps.
+Logs (build the service with `loggingEnabled: true`), stack traces, or anything else that helps.

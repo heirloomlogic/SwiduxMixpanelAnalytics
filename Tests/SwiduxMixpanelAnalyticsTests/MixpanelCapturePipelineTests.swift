@@ -34,7 +34,8 @@ import Testing
 /// - `useGzipCompression: false` — the SDK only gzips `/track/` when this is
 ///   `true`, so captured bodies are directly JSON-decodable.
 /// - `flushInterval: 3600` — nothing sends until an explicit `flush()`; the
-///   stub responds synchronously, so no sleeps or polling are needed.
+///   stub responds synchronously, so no sleeps or polling are needed. The one
+///   exception is a request held on purpose with `holdNextRequest(token:)`.
 /// Serialize capture tests to limit concurrent requests through the shared URL session.
 @Suite("MixpanelCapturePipeline", .serialized, .timeLimit(.minutes(1)))
 struct MixpanelCapturePipelineTests {
@@ -50,6 +51,9 @@ struct MixpanelCapturePipelineTests {
     final class MixpanelCaptureURLProtocol: URLProtocol {
         static let host = "mixpanel-capture.invalid"
         private static let captured = Mutex<[CapturedRequest]>([])
+        /// Set by ``holdNextRequest(token:)``: the token to wait for and the
+        /// semaphore that releases the held request.
+        private static let hold = Mutex<(token: Data, release: DispatchSemaphore)?>(nil)
 
         /// Idempotent registration — reading this static once from `makeService`
         /// installs the protocol a single time for the whole test process.
@@ -72,6 +76,14 @@ struct MixpanelCapturePipelineTests {
             Self.captured.withLock {
                 $0.append(CapturedRequest(path: request.url?.path ?? "", body: body))
             }
+            let release = Self.hold.withLock { hold -> DispatchSemaphore? in
+                guard let pending = hold, body.range(of: pending.token) != nil else { return nil }
+                hold = nil
+                return pending.release
+            }
+            // Blocks this loader thread, and with it the SDK's network queue,
+            // which waits for each response before sending the next batch.
+            _ = release?.wait(timeout: .now() + 10)
             // `canInit` already matched on the request's host, so both unwraps
             // below are structurally unreachable. Fail the request rather than
             // force-unwrap: a broken assumption then surfaces as a failed
@@ -112,6 +124,21 @@ struct MixpanelCapturePipelineTests {
                 data.append(buffer, count: read)
             }
             return data
+        }
+
+        /// Holds the next request whose body contains `token` unanswered until
+        /// the returned semaphore is signalled (or 10 s pass), so a test can act
+        /// while an upload is in flight.
+        static func holdNextRequest(token: String) -> DispatchSemaphore {
+            let release = DispatchSemaphore(value: 0)
+            hold.withLock { $0 = (Data(token.utf8), release) }
+            return release
+        }
+
+        /// Number of captured requests, on any path, whose body contains `token`.
+        static func requestCount(token: String) -> Int {
+            let needle = Data(token.utf8)
+            return captured.withLock { $0.filter { $0.body.range(of: needle) != nil }.count }
         }
 
         /// All top-level JSON objects captured on `/track/` requests belonging
@@ -160,6 +187,7 @@ struct MixpanelCapturePipelineTests {
         instanceName: String = "capture-\(UUID().uuidString)",
         excludeProperties: Set<String> = [],
         optOutTrackingByDefault: Bool = false,
+        deviceIdProvider: (@Sendable () -> String?)? = nil,
         superProperties: [String: AnalyticsValue]? = nil
     ) -> MixpanelAnalyticsService {
         _ = MixpanelCaptureURLProtocol.registerOnce
@@ -169,6 +197,7 @@ struct MixpanelCapturePipelineTests {
             flushInterval: 3600,
             instanceName: instanceName,
             optOutTrackingByDefault: optOutTrackingByDefault,
+            deviceIdProvider: deviceIdProvider,
             superProperties: superProperties,
             serverURL: "https://\(MixpanelCaptureURLProtocol.host)",
             useGzipCompression: false,
@@ -219,10 +248,10 @@ struct MixpanelCapturePipelineTests {
     }
 
     /// Excluded keys must also be stripped from People `$set` updates that ride
-    /// out on `/engage/`.
+    /// out on `/engage/`, including the properties the SDK adds itself.
     @Test func excludedPropertiesStrippedFromPeopleSet() async throws {
         let token = UUID().uuidString
-        let service = Self.makeService(token: token, excludeProperties: ["email"])
+        let service = Self.makeService(token: token, excludeProperties: ["email", "$ios_device_model"])
         await service.identify(
             userID: "u-\(UUID().uuidString)",
             properties: [
@@ -238,6 +267,8 @@ struct MixpanelCapturePipelineTests {
         let set = try #require(setPayload["$set"] as? [String: Any])
         #expect(set["tier"] != nil)
         #expect(set["email"] == nil)
+        #expect(set["$ios_device_model"] == nil)
+        #expect(set["$swift_lib_version"] != nil)
     }
 
     /// Opt-out drops events before they reach the wire; the subsequent opt-in
@@ -332,11 +363,132 @@ struct MixpanelCapturePipelineTests {
         #expect(!events.contains { $0["distinct_id"] as? String == userID })
     }
 
-    /// `hasOptedOutTracking()` must reflect `optOutTrackingByDefault` from the
-    /// first call, not after the SDK's queue gets round to applying it.
-    @Test func optOutByDefaultIsVisibleImmediately() async {
-        let service = Self.makeService(token: UUID().uuidString, optOutTrackingByDefault: true)
-        #expect(await service.hasOptedOutTracking())
+    // MARK: - Consent query
+
+    /// On a first launch with `optOutTrackingByDefault`, the SDK applies the
+    /// opt-out on its queue after `init` returns and reads as opted in until
+    /// then. `isOptedOut` must already say `true`. The test holds the SDK's
+    /// opt-out partway, inside its call to `deviceIdProvider`, where it also
+    /// holds the SDK's lock: a read of the SDK's flag would wait for the
+    /// release and fail the check below.
+    @Test func isOptedOutCoversTheDefaultStillQueued() async throws {
+        let hold = QueuedOptOutHold()
+        let service = hold.makeService()
+        try await hold.waitUntilHeld()
+
+        #expect(service.isOptedOut)
+        #expect(hold.release(), "isOptedOut waited for the SDK")
+        await service.flush()
+        #expect(service.isOptedOut)
+    }
+
+    /// With no stored choice, a first launch reports the default.
+    @Test(arguments: [false, true])
+    func isOptedOutOnFirstLaunchIsTheDefault(optOutTrackingByDefault: Bool) async throws {
+        let name = "capture-\(UUID().uuidString)"
+        let service = Self.makeService(
+            token: UUID().uuidString,
+            instanceName: name,
+            optOutTrackingByDefault: optOutTrackingByDefault
+        )
+        #expect(service.isOptedOut == optOutTrackingByDefault)
+
+        await service.flush()
+        #expect(service.isOptedOut == optOutTrackingByDefault)
+        #expect(try #require(Mixpanel.getInstance(name: name)).hasOptedOutTracking() == optOutTrackingByDefault)
+    }
+
+    /// A stored choice wins over `optOutTrackingByDefault` at launch, either
+    /// way round.
+    @Test(arguments: [false, true], [false, true])
+    func isOptedOutAtLaunchIsTheStoredChoice(optOutTrackingByDefault: Bool, optedOut: Bool) async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(
+            token: token,
+            instanceName: name,
+            optOutTrackingByDefault: optOutTrackingByDefault
+        )
+        // Both calls, so the last one is a change and is stored.
+        await firstLaunch.setOptedOut(!optedOut)
+        await firstLaunch.setOptedOut(optedOut)
+        #expect(MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name))
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(
+            token: token,
+            instanceName: name,
+            optOutTrackingByDefault: optOutTrackingByDefault
+        )
+        #expect(secondLaunch.isOptedOut == optedOut)
+
+        await secondLaunch.flush()
+        #expect(secondLaunch.isOptedOut == optedOut)
+        #expect(try #require(Mixpanel.getInstance(name: name)).hasOptedOutTracking() == optedOut)
+    }
+
+    /// A consent change shows by the time its call returns, and a sign-out
+    /// leaves the value as it was.
+    @Test func isOptedOutFollowsConsentChangesThroughReset() async {
+        let service = Self.makeService(token: UUID().uuidString)
+        #expect(!service.isOptedOut)
+        await service.reset()
+        #expect(!service.isOptedOut)
+
+        await service.setOptedOut(true)
+        #expect(service.isOptedOut)
+        await service.reset()
+        #expect(service.isOptedOut)
+
+        await service.setOptedOut(false)
+        #expect(!service.isOptedOut)
+        await service.reset()
+        #expect(!service.isOptedOut)
+    }
+
+    /// Builds a first-launch service with `optOutTrackingByDefault`, and stops
+    /// the first `deviceIdProvider` call made off the building thread — the
+    /// SDK's queued opt-out — until ``release()``, or for 5 seconds.
+    private final class QueuedOptOutHold: Sendable {
+        private let state = Mutex((builder: pthread_t?.none, held: false, timedOut: false))
+        private let gate = DispatchSemaphore(value: 0)
+        private let id = UUID().uuidString
+
+        /// Synchronous, so the whole initializer runs on the recorded thread.
+        func makeService() -> MixpanelAnalyticsService {
+            state.withLock { $0.builder = pthread_self() }
+            return MixpanelCapturePipelineTests.makeService(
+                token: UUID().uuidString,
+                optOutTrackingByDefault: true,
+                deviceIdProvider: { self.deviceID() }
+            )
+        }
+
+        private func deviceID() -> String {
+            let hold = state.withLock { state in
+                guard let builder = state.builder, pthread_equal(builder, pthread_self()) == 0, !state.held
+                else { return false }
+                state.held = true
+                return true
+            }
+            if hold, gate.wait(timeout: .now() + 5) == .timedOut {
+                state.withLock { $0.timedOut = true }
+            }
+            return id
+        }
+
+        func waitUntilHeld() async throws {
+            try await MixpanelCapturePipelineTests.waitUntil("the SDK never ran its default opt-out") {
+                state.withLock { $0.held }
+            }
+        }
+
+        /// Ends the hold; `false` if it had already timed out.
+        func release() -> Bool {
+            let stillHeld = state.withLock { !$0.timedOut }
+            gate.signal()
+            return stillHeld
+        }
     }
 
     /// The SDK's opt-out queues a `$delete` for the current user, but stores it
@@ -437,7 +589,277 @@ struct MixpanelCapturePipelineTests {
 
         Mixpanel.removeInstance(name: name)
         let secondLaunch = Self.makeService(token: token, instanceName: name)
-        #expect(await secondLaunch.hasOptedOutTracking())
+        #expect(secondLaunch.isOptedOut)
+    }
+
+    /// The same erasure hit an opt-in: with `optOutTrackingByDefault`, a user
+    /// who opted in and then signed out was opted out again on the next
+    /// launch. Restoring it must not record a second `$opt_in`.
+    @Test func optInSurvivesResetAndRelaunch() async {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        await firstLaunch.optInTracking()
+        await firstLaunch.flush()
+        await firstLaunch.reset()
+        #expect(!firstLaunch.isOptedOut)
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        #expect(!secondLaunch.isOptedOut)
+        await secondLaunch.track(AnalyticsEvent("after-relaunch"))
+        await secondLaunch.flush()
+        #expect(Self.eventNames(token: token).filter { $0 == "$opt_in" }.count == 1)
+        #expect(Self.properties(ofEvent: "after-relaunch", token: token).count == 1)
+    }
+
+    /// A user who never chose stays that way through a reset, so an app that
+    /// later turns on `optOutTrackingByDefault` still asks them.
+    @Test func noConsentChoiceSurvivesResetAndRelaunch() async {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name)
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        await firstLaunch.reset()
+        #expect(!MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name))
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        #expect(secondLaunch.isOptedOut)
+    }
+
+    /// Two consent changes while a sign-out is uploading: the last one, an
+    /// opt-in, is what persists.
+    @Test func optInDuringSignOutUploadSurvivesRelaunch() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        await firstLaunch.optInTracking()
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let signingOut = Task { await firstLaunch.reset() }
+        try await Self.waitForRequest(token: token)
+
+        await firstLaunch.optOutTracking()
+        await firstLaunch.optInTracking()
+        release.signal()
+        await signingOut.value
+        #expect(!firstLaunch.isOptedOut)
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        #expect(!secondLaunch.isOptedOut)
+    }
+
+    /// An opt-in erases the persisted flag with its own SDK `reset()` and
+    /// writes it again a moment later. A sign-out upload that finishes in
+    /// between must still find that the user has made a choice. The test
+    /// removes the flag itself to hold that moment open.
+    @Test func optInWhosePersistedFlagIsPendingSurvivesSignOut() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        await firstLaunch.optInTracking()
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let signingOut = Task { await firstLaunch.reset() }
+        try await Self.waitForRequest(token: token)
+
+        await firstLaunch.optOutTracking()
+        await firstLaunch.optInTracking()
+        try await Self.waitUntil("the opt-in was never persisted") {
+            MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name)
+        }
+        UserDefaults(suiteName: "Mixpanel")?.removeObject(forKey: "mixpanel-\(name)-OptOutStatus")
+        release.signal()
+        await signingOut.value
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        #expect(!secondLaunch.isOptedOut)
+    }
+
+    // MARK: - Consent withdrawal
+
+    private struct PluginState: Sendable, Equatable {
+        var analytics = AnalyticsState()
+    }
+
+    private enum PluginAction: Sendable, Equatable {
+        case analytics(AnalyticsAction)
+    }
+
+    /// The Swidux plugin wired to `service` the way the docs recommend.
+    @MainActor
+    private static func makePlugin(
+        service: MixpanelAnalyticsService
+    ) -> AnalyticsPlugin<PluginState, PluginAction> {
+        AnalyticsPlugin(
+            state: \.analytics,
+            action: PluginAction.analytics,
+            extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
+            service: service,
+            onConsentChange: { await service.setOptedOut($0) }
+        )
+    }
+
+    /// Waits until a request carrying `token` has been captured.
+    private static func waitForRequest(token: String) async throws {
+        try await waitUntil("no request arrived") { MixpanelCaptureURLProtocol.requestCount(token: token) > 0 }
+    }
+
+    /// Polls `condition` every millisecond, failing the test with `message`
+    /// after 10 seconds.
+    private static func waitUntil(_ message: Comment, _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while !condition() {
+            try #require(ContinuousClock.now < deadline, message)
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
+    /// Withdrawing consent through the plugin's hook, followed by the reset
+    /// the plugin issues, must send nothing that was queued: events, the
+    /// profile update, and the SDK's own `$delete`. Repeating the opt-out
+    /// changes nothing, and the next user who consents starts clean.
+    @Test @MainActor func consentWithdrawalDiscardsTheQueue() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        let plugin = Self.makePlugin(service: service)
+        var state = PluginState()
+        let alice = "alice-\(UUID().uuidString)"
+        let bob = "bob-\(UUID().uuidString)"
+
+        await service.identify(userID: alice, properties: ["plan": .string("pro")])
+        for index in 0..<120 {
+            await service.track(AnalyticsEvent("queued", ["index": .int(index)]))
+        }
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        await plugin.flush()
+
+        #expect(service.isOptedOut)
+        #expect(MixpanelCaptureURLProtocol.requestCount(token: token) == 0)
+
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
+        _ = plugin.reduce(
+            state: &state,
+            action: .analytics(.identify(userID: bob, properties: ["plan": .string("free")]))
+        )
+        _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("after-consent"))))
+        await plugin.flush()
+
+        let after = try #require(Self.properties(ofEvent: "after-consent", token: token).first)
+        #expect(after["distinct_id"] as? String == bob)
+        #expect(Self.properties(ofEvent: "queued", token: token).isEmpty)
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(!engage.contains { $0["$delete"] != nil })
+        #expect(!engage.contains { $0["$distinct_id"] as? String == alice })
+        #expect(engage.contains { ($0["$set"] as? [String: Any])?["plan"] as? String == "free" })
+    }
+
+    /// The discarded queue is deleted, not held back: after a relaunch, an
+    /// opt-in made through the SDK itself (which, unlike the adapter's, keeps
+    /// whatever is still queued) finds nothing from before the withdrawal.
+    @Test func withdrawnQueueIsGoneAfterRelaunch() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name)
+        await firstLaunch.identify(userID: "alice-\(UUID().uuidString)", properties: ["plan": .string("pro")])
+        for index in 0..<60 {
+            await firstLaunch.track(AnalyticsEvent("queued", ["index": .int(index)]))
+        }
+        await firstLaunch.optOutTracking()
+        await firstLaunch.optOutTracking()
+        await firstLaunch.reset()
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name)
+        #expect(secondLaunch.isOptedOut)
+
+        let instance = try #require(Mixpanel.getInstance(name: name))
+        instance.optInTracking()
+        while instance.hasOptedOutTracking() {
+            await Task.yield()
+        }
+        instance.track(event: "after-relaunch")
+        await withCheckedContinuation { continuation in
+            instance.flush(performFullFlush: true) { continuation.resume() }
+        }
+
+        #expect(!Self.properties(ofEvent: "after-relaunch", token: token).isEmpty)
+        #expect(Self.properties(ofEvent: "queued", token: token).isEmpty)
+        #expect(MixpanelCaptureURLProtocol.engagePayloads(token: token).isEmpty)
+    }
+
+    /// Measures the in-flight boundary. Opting out returns while an upload is
+    /// still waiting for the server. The SDK checks consent only as a flush
+    /// starts and between its events and People queues, so the flush already
+    /// sending events finishes every event it had read (all 120 here, in
+    /// three requests), while the People queue it had read is never sent. If
+    /// the SDK changes this, update the in-flight note in the docs.
+    @Test func optOutDoesNotWaitForAnUploadInFlight() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        await service.identify(userID: "alice-\(UUID().uuidString)", properties: ["plan": .string("pro")])
+        for index in 0..<120 {
+            await service.track(AnalyticsEvent("bulk", ["index": .int(index)]))
+        }
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let flushing = Task { await service.flush() }
+        try await Self.waitForRequest(token: token)
+
+        await service.optOutTracking()
+        // The first batch is still unanswered, so nothing else has gone out.
+        #expect(MixpanelCaptureURLProtocol.requestCount(token: token) == 1)
+
+        release.signal()
+        await flushing.value
+        #expect(Self.properties(ofEvent: "bulk", token: token).count == 120)
+        #expect(MixpanelCaptureURLProtocol.engagePayloads(token: token).isEmpty)
+
+        // Nothing is sent a second time once consent returns.
+        await service.optInTracking()
+        await service.track(AnalyticsEvent("after-consent"))
+        await service.flush()
+        #expect(!Self.properties(ofEvent: "after-consent", token: token).isEmpty)
+        #expect(Self.properties(ofEvent: "bulk", token: token).count == 120)
+    }
+
+    /// Ordinary sign-out still sends what the user recorded before it.
+    @Test func signOutStillSendsTheQueue() async {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        await service.identify(userID: "alice-\(UUID().uuidString)", properties: ["plan": .string("pro")])
+        await service.track(AnalyticsEvent("before-sign-out"))
+        await service.reset()
+
+        #expect(Self.properties(ofEvent: "before-sign-out", token: token).count == 1)
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(engage.contains { ($0["$set"] as? [String: Any])?["plan"] as? String == "pro" })
+    }
+
+    /// The plugin runs consent changes apart from other service calls, so an
+    /// opt-out can finish while a sign-out is still uploading. The sign-out's
+    /// SDK `reset()` then runs after the opt-out and erases its persisted
+    /// flag, and the user was tracked again from the next launch.
+    @Test func optOutDuringSignOutUploadSurvivesRelaunch() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name)
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let signingOut = Task { await firstLaunch.reset() }
+        try await Self.waitForRequest(token: token)
+
+        await firstLaunch.optOutTracking()
+        release.signal()
+        await signingOut.value
+        #expect(firstLaunch.isOptedOut)
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name)
+        #expect(secondLaunch.isOptedOut)
     }
 
     // MARK: - Identity
@@ -577,5 +999,45 @@ struct MixpanelCapturePipelineTests {
         #expect(set["coupon"] == nil)
         let unset = try #require(engage.compactMap { $0["$unset"] as? [String] }.first)
         #expect(unset == ["coupon"])
+    }
+
+    /// A property left out of a later `identify` is not sent, so its saved
+    /// value stays; only an explicit `.null` unsets it. A dictionary is sent
+    /// whole, with its nested nulls dropped, and is not unset. The SDK adds
+    /// its own properties to every `$set`, but not to an `$unset`.
+    @Test func omittedProfilePropertiesAreKeptAndNullDeletes() async {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        let userID = "u-\(UUID().uuidString)"
+        await service.identify(
+            userID: userID,
+            properties: [
+                "a": .string("x"), "b": .string("y"),
+                "prefs": .dict(["theme": .string("dark")]),
+            ])
+        await service.flush()
+        await service.identify(
+            userID: userID,
+            properties: ["a": .string("z"), "prefs": .dict(["theme": .null])])
+        await service.flush()
+
+        let omitted = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        let sets = omitted.compactMap { $0["$set"] as? [String: Any] }
+        #expect(sets.count == 2)
+        #expect(sets.first?["a"] as? String == "x")
+        #expect(sets.first?["b"] as? String == "y")
+        #expect(sets.last?["a"] as? String == "z")
+        #expect(sets.last?["b"] == nil)
+        #expect((sets.last?["prefs"] as? [String: Any])?.isEmpty == true)
+        #expect(sets.last?.keys.filter { !$0.hasPrefix("$") }.sorted() == ["a", "prefs"])
+        #expect(sets.last?["$swift_lib_version"] != nil)
+        #expect(omitted.allSatisfy { $0["$unset"] == nil })
+
+        await service.identify(userID: userID, properties: ["b": .null])
+        await service.flush()
+
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(engage.compactMap { $0["$set"] }.count == 2)
+        #expect(engage.compactMap { $0["$unset"] as? [String] } == [["b"]])
     }
 }

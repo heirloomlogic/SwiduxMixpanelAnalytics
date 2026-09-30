@@ -7,7 +7,7 @@ Drive `AnalyticsService` from SwiftUI previews and Swift Testing suites without 
 `MixpanelAnalyticsService` calls into a real `MixpanelInstance`. Previews and tests use a recorder instead. There are two:
 
 - `RecordingAnalyticsService`, from `SwiduxAnalytics`, records every service call. Use it for tests that only check what the plugin sent. Those tests don't mention Mixpanel, so they stay the same if the app changes provider.
-- ``RecordingMixpanelAnalyticsService`` adds recorded versions of Mixpanel's consent, logging, and geolocation controls. Use it where the code under test calls those controls.
+- ``RecordingMixpanelAnalyticsService`` adds recorded versions of Mixpanel's consent controls. Use it where the code under test calls those controls.
 
 Neither needs the Mixpanel SDK at runtime or touches the network.
 
@@ -81,7 +81,7 @@ func optOutStopsMixpanelBeforeReset() async {
     await store.analyticsPlugin.flush()
 
     #expect(await service.recorder.calls == [.setOptedOut(true), .reset, .flush])
-    #expect(await service.hasOptedOutTracking())
+    #expect(service.isOptedOut)
 }
 ```
 

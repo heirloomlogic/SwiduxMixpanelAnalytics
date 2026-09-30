@@ -4,7 +4,7 @@ Configure `MixpanelAnalyticsService` to match your privacy, residency, and batch
 
 ## Overview
 
-``MixpanelAnalyticsService`` is the configuration boundary: every Mixpanel knob worth setting at launch is a parameter on the initializer, and runtime GDPR / diagnostic toggles are methods on the service. The Mixpanel SDK stays a private implementation detail of this package.
+``MixpanelAnalyticsService`` is the configuration boundary: the initializer takes the Mixpanel settings most apps set at launch, and consent controls are methods on the service. The Mixpanel SDK stays a private implementation detail of this package.
 
 ## Default initialization
 
@@ -16,7 +16,7 @@ let service = MixpanelAnalyticsService(token: "your-token")
 
 Defaults match the Mixpanel SDK's `MixpanelOptions`: `flushInterval: 60`, `optOutTrackingByDefault: false`, gzip on, a random-UUID anonymous ID, `trackAutomaticEvents: false`. The initializer is the same on every platform.
 
-> Important: The Mixpanel SDK keys instances by `instanceName` (falling back to `token`). Constructing a second service with the same name returns the *existing* SDK instance and silently ignores the new options. Construct the service once, where the store is configured — not per view, per preview, or per test.
+> Important: The Mixpanel SDK keys instances by `instanceName` (falling back to `token`). Constructing a second service with the same name returns the *existing* SDK instance, and none of the options passed to `Mixpanel.initialize` take effect. The new service is still a separate adapter: settings the adapter applies itself do reach the shared instance, and the state it keeps is its own, not shared with the first service. For example, it writes `loggingEnabled: true` and `useIPAddressForGeoLocation: false` to the instance. After its `reset()` or opt-in, the instance carries this service's `superProperties`, or none. With `optOutTrackingByDefault: true` and no stored consent choice, it reports `isOptedOut` as `true`, even if the instance is opted in, until a flush it starts on the instance completes, and its consent, `identify`, `alias`, and `reset()` calls wait for that flush. Construct the service once, where the store is configured — not per view, per preview, or per test.
 
 > Important: `serverURL` must be an absolute URL with a scheme and host. Requests to anything else fail, and a string that isn't a URL at all makes every `flush()` wait out the SDK's 120-second request timeout. The adapter asserts on this in Debug builds.
 
@@ -52,11 +52,19 @@ AnalyticsPlugin(
 )
 ```
 
-From then on `store.send(.analytics(.setOptedOut(_:)))` switches both the plugin's gate and Mixpanel's own. Seed the plugin's `AnalyticsState(isOptedOut:)` from the consent your app stores, and dispatch that value once at launch — see <doc:GettingStarted>.
+From then on `store.send(.analytics(.setOptedOut(_:)))` switches both the plugin's gate and Mixpanel's own. The plugin's `AnalyticsState(isOptedOut:)` has to start out agreeing with Mixpanel. Either seed it from the consent your app stores and dispatch that value once at launch (see <doc:GettingStarted>), or seed it from the service:
+
+```swift
+initialState.analytics = AnalyticsState(isOptedOut: service.isOptedOut)
+```
+
+``MixpanelAnalyticsService/isOptedOut`` answers synchronously. On a first launch with `optOutTrackingByDefault` it is `true` as soon as the service exists, even if the SDK has not yet applied that default on its own queue.
 
 Both directions return only once the SDK has applied them, so an `identify` dispatched straight after consent is honored and one dispatched straight after withdrawal is dropped. Mixpanel remembers the choice across launches; `optOutTrackingByDefault` only decides the state before the user has chosen.
 
-Opting out sends what was recorded while the user consented, then clears the local identity. It does **not** delete the user's Mixpanel profile or data — the SDK's own attempt at that is never sent, and the adapter suppresses it because it would later delete the next user's profile instead. Erase data with Mixpanel's GDPR deletion API from your server.
+Opting out deletes whatever is still queued instead of sending it, then clears the local identity, without waiting for the network. An upload that has already started is not cancelled: the SDK checks consent only when a flush starts and between its event and profile queues, so a flush already sending events finishes sending the events it had read. Signing out with `.analytics(.reset)` is different; it sends the queue first, so events recorded before sign-out keep their user.
+
+Opting out does **not** delete the user's Mixpanel profile or data. The SDK's own attempt at that is never sent, and the adapter discards it because it would later delete the next user's profile instead. Erase data with Mixpanel's GDPR deletion API from your server.
 
 `optInTracking(distinctID:properties:)` and `optOutTracking()` remain available for apps that don't route consent through the plugin.
 
@@ -89,18 +97,18 @@ let service = MixpanelAnalyticsService(token: "your-token", flushInterval: 30)
 ## Diagnostic logging
 
 ```swift
-await service.setLoggingEnabled(true)
+let service = MixpanelAnalyticsService(token: "your-token", loggingEnabled: true)
 ```
 
-Enables the Mixpanel SDK's internal logging — useful when verifying integration in development. Disable in release builds. Set it once at launch: the SDK doesn't synchronize this property.
+Turns on the Mixpanel SDK's logging, which helps when checking an integration during development; leave it off in release builds. The SDK's logger is shared by every Mixpanel instance in the process, so this turns logging on for all of them.
 
 ## Geo by IP
 
 ```swift
-await service.setUseIPAddressForGeoLocation(false)
+let service = MixpanelAnalyticsService(token: "your-token", useIPAddressForGeoLocation: false)
 ```
 
-Opt out of server-side IP-based geo resolution when your privacy policy forbids it. Set it once at launch, for the same reason as logging.
+Stops Mixpanel from working out the user's location from the request's IP address, for when your privacy policy forbids it.
 
 ## Aliases and ID merge
 
@@ -109,6 +117,30 @@ Projects on Mixpanel's Simplified ID Merge (check your project's Identity Merge 
 ## Switching users
 
 When `identify` moves to a different user, the adapter first sends everything queued for the previous user and waits for it — the SDK otherwise sends every queued profile update under whoever is identified at send time. Dispatching `.analytics(.reset)` on sign-out is still the right shape; it also clears super properties set at runtime (the ones passed to the initializer come back automatically).
+
+## Update and remove profile properties
+
+A property left out of a later `identify` call is not sent, so the value Mixpanel already has stays. To delete a saved property, pass it as `.null`, which sends an `$unset` for that key:
+
+```swift
+// Sets `plan` and `experiment_variant`.
+await service.identify(
+    userID: "user-1",
+    properties: ["plan": .string("pro"), "experiment_variant": .string("b")]
+)
+
+// Updates `plan`. `experiment_variant` keeps its value.
+await service.identify(userID: "user-1", properties: ["plan": .string("team")])
+
+// Deletes `experiment_variant`.
+await service.identify(userID: "user-1", properties: ["experiment_variant": .null])
+```
+
+This holds when the plugin calls `identify` for you: if you drop a key from the `userProperties` derived from state, the saved value stays. To delete it, map the key to `.null`. Only a top-level `.null` deletes.
+
+Each property you pass is sent whole, and the new value replaces the saved one. A null inside an array or dictionary is dropped before sending, so it does not delete anything by itself, but the rest of that value replaces the saved value. If `prefs` is saved as `{theme: dark}` and you identify with `["prefs": .dict(["theme": .null])]`, the adapter sends `prefs` as `{}` and `theme` is gone from the saved value. To keep the other entries of a dictionary, send them again. See <doc:ValueTranslation> for the translation rules.
+
+Every `$set` the adapter sends also carries the SDK's own automatic people properties (for example `$ios_device_model` and `$swift_lib_version`), except any listed in `excludeProperties`. They are sent whenever a call has at least one property that is not null. A call whose properties are empty or all null sends no `$set`.
 
 ## Exclude properties
 
