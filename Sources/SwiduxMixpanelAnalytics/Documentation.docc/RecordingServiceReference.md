@@ -51,7 +51,7 @@ All accessors are `async`, so read them with `await`. The record types have publ
 
 #### Consent
 
-`init(optedOut:)` stands in for the real service's `optOutTrackingByDefault`. `setOptedOut(_:)` routes to `optOutTracking()` or `optInTracking()` as the real service does, so the same `onConsentChange: { await service.setOptedOut($0) }` wiring works for both. Every opt-in and opt-out is recorded, including a repeated one that the real service would ignore.
+`init(optedOut:)` stands in for the real service's `optOutTrackingByDefault`. `setOptedOut(_:)` routes to `optOutTracking()` or `optInTracking()` as the real service does, so the same `onConsentChange: { await service.setOptedOut($0) }` wiring works for both. Every opt-in and opt-out is recorded, including a repeat. The real service skips a repeated opt-out, and a repeated opt-in only identifies a non-empty `distinctID`.
 
 #### Determinism
 
