@@ -621,6 +621,29 @@ struct MixpanelCapturePipelineTests {
         #expect(engage.contains { ($0["$set"] as? [String: Any])?["plan"] as? String == "pro" })
     }
 
+    /// The plugin runs consent changes apart from other service calls, so an
+    /// opt-out can finish while a sign-out is still uploading. The sign-out's
+    /// SDK `reset()` then runs after the opt-out and erases its persisted
+    /// flag, and the user was tracked again from the next launch.
+    @Test func optOutDuringSignOutUploadSurvivesRelaunch() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name)
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let signingOut = Task { await firstLaunch.reset() }
+        try await Self.waitForRequest(token: token)
+
+        await firstLaunch.optOutTracking()
+        release.signal()
+        await signingOut.value
+        #expect(await firstLaunch.hasOptedOutTracking())
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name)
+        #expect(await secondLaunch.hasOptedOutTracking())
+    }
+
     // MARK: - Identity
 
     /// Init-time super properties were dropped when the service started opted

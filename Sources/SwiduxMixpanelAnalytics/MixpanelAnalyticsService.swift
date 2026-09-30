@@ -237,7 +237,9 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// While opted out this only forgets the adapter's record of the user.
     /// Opting out has already cleared the SDK's identity and queue, and the
     /// SDK's `reset()` would also erase the persisted opt-out — the user
-    /// would be tracked again from the next launch.
+    /// would be tracked again from the next launch. If the user opts out while
+    /// this is still sending, the opt-out is written back after the SDK's
+    /// `reset()` erases it.
     public func reset() async {
         await defaultOptOut?.value
         guard !instance.hasOptedOutTracking() else {
@@ -248,6 +250,15 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         // partial batch of its own, which would send the same records twice.
         await flush()
         await resetSDK()
+        // An opt-out does not wait for the network, so one can finish while
+        // the flush above is uploading. The SDK's `reset()` then deletes the
+        // persisted flag but keeps the in-memory one, which this checks. An
+        // opt-out still queued at this point runs later and persists itself.
+        guard !instance.hasOptedOutTracking() else {
+            instance.optOutTracking()
+            await awaitPersistedOptOut()
+            return
+        }
         registerSuperProperties()
     }
 
@@ -328,10 +339,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
             instance.reset { continuation.resume() }
             instance.optOutTracking()
         }
-        await poll(
-            until: { Self.hasPersistedConsentChoice(instanceName: instance.name) },
-            "a persisted opt-out"
-        )
+        await awaitPersistedOptOut()
         session.forgetUser()
     }
 
@@ -449,6 +457,15 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
             }
             interval = min(interval * 2, .milliseconds(50))
         }
+    }
+
+    /// Suspends until the SDK has persisted an opt-out queued just before —
+    /// needed after a `reset()`, which deletes the stored flag.
+    private func awaitPersistedOptOut() async {
+        await poll(
+            until: { Self.hasPersistedConsentChoice(instanceName: instance.name) },
+            "a persisted opt-out"
+        )
     }
 
     /// With `optOutTrackingByDefault` and no consent choice persisted yet,
