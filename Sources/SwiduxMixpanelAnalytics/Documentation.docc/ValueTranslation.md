@@ -24,7 +24,7 @@ Mixpanel's `MixpanelType` accepts `String`, `Int`, `UInt`, `Double`, `Float`, `B
 ## Behavior notes
 
 - **`Int` vs `Double` are preserved.** `AnalyticsValue.int(5)` becomes `Int`; `.double(5)` becomes `Double`. Mixpanel's UI may render them similarly, but the wire types differ.
-- **Nulls are omitted.** The Mixpanel SDK cannot send a JSON `null`: it re-serializes queued data when flushing and turns every `NSNull` into the string `"<null>"`. So `.null` values — at the top level, in arrays, and in dictionaries — are left out rather than arriving as that string. On a user profile, `identify` *unsets* a top-level property whose value is null; that is the way to delete a saved property. A property left out of `identify` is not touched and keeps its saved value.
+- **Nulls are omitted.** The Mixpanel SDK cannot send a JSON `null`: it re-serializes queued data when flushing and turns every `NSNull` into the string `"<null>"`. So `.null` values — at the top level, in arrays, and in dictionaries — are left out rather than arriving as that string. On a user profile, `identify` *unsets* a top-level property whose value is null; that is how a saved property is deleted. A property left out of `identify` keeps its saved value. See <doc:HowToImplementService>.
 - **Non-finite doubles count as null.** NaN and ±infinity make the SDK assert (a crash in Debug builds) and otherwise arrive as the strings `"nan"` / `"inf"`, so they are omitted like `.null`.
 - **Empty event properties** (no keys) are forwarded as `nil` rather than an empty dictionary, mirroring Mixpanel's `track(event:properties:)` convention.
 - **Nested structures** flatten correctly: `.dict([.array([.int(1), .int(2)])])` translates to `[String: [MixpanelType]]` with primitive elements intact.

@@ -77,7 +77,7 @@ Forwards to `MixpanelInstance.track(event:properties:)`. Empty `properties` are 
 
 #### `identify(userID:properties:) async`
 
-Forwards to `MixpanelInstance.identify(distinctId:)`, then sets `properties` on the user's profile with `instance.people.set(properties:)`; properties that translate to null are unset instead. Only the keys in `properties` touch the profile: a key left out of a later call keeps its saved value and nothing is sent for it, and passing `.null` for a key deletes it (`["plan": .null]` removes `plan`). A null inside an array or dictionary is dropped from that value and does not delete anything. Empty `userID`s are dropped entirely: the SDK rejects blank distinct IDs, and forwarding the people update anyway would attribute it to the previous identity. Calls made while opted out are dropped.
+Forwards to `MixpanelInstance.identify(distinctId:)`, then sets `properties` on the user's profile with `instance.people.set(properties:)`; properties that translate to null are unset instead. Only the keys in `properties` touch the profile: a key left out of a later call keeps its saved value, and `.null` deletes it (see <doc:HowToImplementService>). Empty `userID`s are dropped entirely: the SDK rejects blank distinct IDs, and forwarding the people update anyway would attribute it to the previous identity. Calls made while opted out are dropped.
 
 When the user changes, everything queued for the previous user is sent first, and `identify` waits for it — the SDK attributes queued profile updates to whoever is identified when they are sent.
 
