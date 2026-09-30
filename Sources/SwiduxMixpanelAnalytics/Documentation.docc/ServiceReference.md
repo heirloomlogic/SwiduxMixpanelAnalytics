@@ -87,7 +87,7 @@ Forwards to `MixpanelInstance.createAlias(_:distinctId:andIdentify:)` with `andI
 
 #### `reset() async`
 
-Sends everything queued and waits for it, then forwards to `MixpanelInstance.reset(completion:)` and awaits its callback — the SDK's own `reset()` sends one 50-record batch and deletes the rest. Clears Mixpanel's local distinct ID, super properties, and timed events, then re-applies the initializer's super properties. While opted out it leaves the SDK alone: its `reset()` would also erase the persisted opt-out, and the user would be tracked again from the next launch.
+Sends everything queued and waits for it, then forwards to `MixpanelInstance.reset(completion:)` and awaits its callback — the SDK's own `reset()` sends one 50-record batch and deletes the rest. Clears Mixpanel's local distinct ID, super properties, and timed events, then re-applies the initializer's super properties. The SDK's `reset()` also erases the persisted consent choice, so the adapter writes it back: an opted-in user stays opted in after the next launch (no second `$opt_in` is sent), an opted-out user stays opted out, and a user who never chose is left on the default. If consent changes through the adapter while the queue is being sent, the latest choice is the one kept. While opted out it leaves the SDK alone, since opting out has already cleared the identity and the queue.
 
 #### `flush() async`
 

@@ -467,6 +467,95 @@ struct MixpanelCapturePipelineTests {
         #expect(await secondLaunch.hasOptedOutTracking())
     }
 
+    /// The same erasure hit an opt-in: with `optOutTrackingByDefault`, a user
+    /// who opted in and then signed out was opted out again on the next
+    /// launch. Restoring it must not record a second `$opt_in`.
+    @Test func optInSurvivesResetAndRelaunch() async {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        await firstLaunch.optInTracking()
+        await firstLaunch.flush()
+        await firstLaunch.reset()
+        #expect(!(await firstLaunch.hasOptedOutTracking()))
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        #expect(!(await secondLaunch.hasOptedOutTracking()))
+        await secondLaunch.track(AnalyticsEvent("after-relaunch"))
+        await secondLaunch.flush()
+        #expect(Self.eventNames(token: token).filter { $0 == "$opt_in" }.count == 1)
+        #expect(Self.properties(ofEvent: "after-relaunch", token: token).count == 1)
+    }
+
+    /// A user who never chose stays that way through a reset, so an app that
+    /// later turns on `optOutTrackingByDefault` still asks them.
+    @Test func noConsentChoiceSurvivesResetAndRelaunch() async {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name)
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        await firstLaunch.reset()
+        #expect(!MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name))
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        #expect(await secondLaunch.hasOptedOutTracking())
+    }
+
+    /// Two consent changes while a sign-out is uploading: the last one, an
+    /// opt-in, is what persists.
+    @Test func optInDuringSignOutUploadSurvivesRelaunch() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        await firstLaunch.optInTracking()
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let signingOut = Task { await firstLaunch.reset() }
+        try await Self.waitForRequest(token: token)
+
+        await firstLaunch.optOutTracking()
+        await firstLaunch.optInTracking()
+        release.signal()
+        await signingOut.value
+        #expect(!(await firstLaunch.hasOptedOutTracking()))
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        #expect(!(await secondLaunch.hasOptedOutTracking()))
+    }
+
+    /// An opt-in erases the persisted flag with its own SDK `reset()` and
+    /// writes it again a moment later. A sign-out upload that finishes in
+    /// between must still find that the user has made a choice. The test
+    /// removes the flag itself to hold that moment open.
+    @Test func optInWhosePersistedFlagIsPendingSurvivesSignOut() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        await firstLaunch.optInTracking()
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let signingOut = Task { await firstLaunch.reset() }
+        try await Self.waitForRequest(token: token)
+
+        await firstLaunch.optOutTracking()
+        await firstLaunch.optInTracking()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while !MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name) {
+            try #require(ContinuousClock.now < deadline, "the opt-in was never persisted")
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        UserDefaults(suiteName: "Mixpanel")?.removeObject(forKey: "mixpanel-\(name)-OptOutStatus")
+        release.signal()
+        await signingOut.value
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        #expect(!(await secondLaunch.hasOptedOutTracking()))
+    }
+
     // MARK: - Consent withdrawal
 
     private struct PluginState: Sendable, Equatable {
