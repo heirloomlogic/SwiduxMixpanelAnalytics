@@ -104,6 +104,8 @@ So keep the user's consent choice in your own storage (`ConsentStore` above stan
 .task { store.send(.analytics(.setOptedOut(ConsentStore.isOptedOut))) }
 ```
 
+If Mixpanel's own record of the choice is enough, seed the flag from the service's synchronous `isOptedOut` instead. The two then agree from the start, and no launch dispatch is needed; see <doc:HowToImplementService>.
+
 Repeating a consent value is harmless: opting in a user who already consented sends nothing, and opting out an opted-out user does nothing.
 
 ## Verify the wiring

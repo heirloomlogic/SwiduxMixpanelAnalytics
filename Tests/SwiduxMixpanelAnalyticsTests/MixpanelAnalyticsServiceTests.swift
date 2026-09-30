@@ -73,23 +73,50 @@ struct MixpanelAnalyticsServiceTests {
     /// Consent calls return only once the SDK has applied them.
     @Test func consentStateIsSettledOnReturn() async {
         let service = Self.makeService()
-        #expect(await service.hasOptedOutTracking())
+        #expect(service.isOptedOut)
 
         await service.setOptedOut(false)
-        #expect(await service.hasOptedOutTracking() == false)
+        #expect(!service.isOptedOut)
 
         await service.optOutTracking()
-        #expect(await service.hasOptedOutTracking())
+        #expect(service.isOptedOut)
 
         await service.optInTracking(distinctID: "u2", properties: ["tier": .string("pro")])
-        #expect(await service.hasOptedOutTracking() == false)
+        #expect(!service.isOptedOut)
     }
 
-    @Test func setLoggingAndGeoTogglesResolve() async {
-        let service = Self.makeService()
-        await service.setLoggingEnabled(true)
-        await service.setUseIPAddressForGeoLocation(false)
-        await service.setLoggingEnabled(false)
+    /// The SDK has no options for logging or geolocation by IP, so the
+    /// initializer sets them on the instance.
+    @Test func loggingAndGeoAreSetAtInit() {
+        _ = MixpanelCapturePipelineTests.MixpanelCaptureURLProtocol.registerOnce
+        let name = "smoke-\(UUID().uuidString)"
+        _ = MixpanelAnalyticsService(
+            token: "test-token",
+            instanceName: name,
+            serverURL: Self.serverURL,
+            loggingEnabled: true,
+            useIPAddressForGeoLocation: false
+        )
+        let instance = Mixpanel.getInstance(name: name)
+        #expect(instance?.loggingEnabled == true)
+        #expect(instance?.useIPAddressForGeoLocation == false)
+        // The SDK's logger is process-wide; switch it back off.
+        instance?.loggingEnabled = false
+    }
+
+    /// The defaults write nothing, so building a second service for the same
+    /// instance does not undo the first one's settings.
+    @Test func defaultInitLeavesAnExistingInstanceAlone() {
+        _ = MixpanelCapturePipelineTests.MixpanelCaptureURLProtocol.registerOnce
+        let name = "smoke-\(UUID().uuidString)"
+        _ = MixpanelAnalyticsService(
+            token: "test-token",
+            instanceName: name,
+            serverURL: Self.serverURL,
+            useIPAddressForGeoLocation: false
+        )
+        _ = MixpanelAnalyticsService(token: "test-token", instanceName: name, serverURL: Self.serverURL)
+        #expect(Mixpanel.getInstance(name: name)?.useIPAddressForGeoLocation == false)
     }
 
     /// The SDK consults `deviceIdProvider` only when no persisted identity

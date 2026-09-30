@@ -29,20 +29,6 @@ Mixpanel's `MixpanelType` accepts `String`, `Int`, `UInt`, `Double`, `Float`, `B
 - **Empty event properties** (no keys) are forwarded as `nil` rather than an empty dictionary, mirroring Mixpanel's `track(event:properties:)` convention.
 - **Nested structures** flatten correctly: `.dict([.array([.int(1), .int(2)])])` translates to `[String: [MixpanelType]]` with primitive elements intact.
 
-## Public API
-
-```swift
-extension AnalyticsValue {
-    public func toMixpanelType() -> any MixpanelType  // `NSNull()` for null and non-finite values
-}
-
-extension Dictionary where Key == String, Value == AnalyticsValue {
-    public func toMixpanelProperties() -> Properties  // null entries omitted
-}
-```
-
-You typically don't call these directly — `MixpanelAnalyticsService` invokes them on every `track` and `identify`. They are exposed for tests, debugging, or for callers who construct Mixpanel events outside the plugin.
-
 ## See Also
 
 - <doc:ServiceReference>

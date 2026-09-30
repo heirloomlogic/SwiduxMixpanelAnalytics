@@ -4,8 +4,8 @@
 //
 
 import Foundation
-import Mixpanel
-import SwiduxAnalytics
+public import Mixpanel
+public import SwiduxAnalytics
 import Synchronization
 import os
 
@@ -13,7 +13,7 @@ import os
 /// instance.
 ///
 /// The adapter is the configuration boundary: pass the token and any other
-/// Mixpanel knobs to ``init(token:trackAutomaticEvents:flushInterval:instanceName:optOutTrackingByDefault:useUniqueDistinctId:deviceIdProvider:superProperties:serverURL:useGzipCompression:excludeProperties:)``
+/// Mixpanel knobs to ``init(token:trackAutomaticEvents:flushInterval:instanceName:optOutTrackingByDefault:useUniqueDistinctId:deviceIdProvider:superProperties:serverURL:useGzipCompression:excludeProperties:loggingEnabled:useIPAddressForGeoLocation:)``
 /// and the app never needs to `import Mixpanel`. The initializer is the same
 /// on every platform; it builds a `MixpanelOptions` and calls
 /// `Mixpanel.initialize(options:)`.
@@ -34,15 +34,14 @@ import os
 ///
 /// The struct is `@unchecked Sendable`: `MixpanelInstance` serializes its
 /// tracking work on internal queues, and every copy of the service shares one
-/// SDK instance. The exceptions are the diagnostic setters, which write
-/// unsynchronized SDK properties — set those once, at launch.
+/// SDK instance.
 public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     private let instance: MixpanelInstance
     /// Init-time super properties, re-registered whenever the SDK drops them
     /// (it clears them on `reset()` and opt-out, and ignores them when the
     /// instance starts opted out).
     private let superProperties: Properties?
-    private let session = Session()
+    private let session: Session
     /// Resolves once the SDK has applied `optOutTrackingByDefault`; `nil` when
     /// there is nothing pending. See `awaitDefaultOptOut(of:)`.
     private let defaultOptOut: Task<Void, Never>?
@@ -57,8 +56,10 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// > Important: The Mixpanel SDK keys instances by `instanceName` (falling
     /// > back to `token`). Constructing a second service with the same name
     /// > returns the *existing* SDK instance and silently ignores the new
-    /// > options — construct the service once, where the store is configured,
-    /// > rather than per view or per preview.
+    /// > options, apart from a `loggingEnabled: true` or
+    /// > `useIPAddressForGeoLocation: false`, which still apply to it.
+    /// > Construct the service once, where the store is configured, rather
+    /// > than per view or per preview.
     ///
     /// - Parameters:
     ///   - token: The Mixpanel project token.
@@ -97,6 +98,13 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     ///     — e.g. keys that may carry PII. Other People operators pass through
     ///     unfiltered, and keys Mixpanel requires for ingestion
     ///     (`distinct_id`, `token`, …) are never stripped. Defaults to empty.
+    ///   - loggingEnabled: If `true`, turns on the SDK's logging. The SDK's
+    ///     logger is shared by every Mixpanel instance in the process, so this
+    ///     turns it on for all of them; `false` leaves it as it is (off unless
+    ///     something else turned it on). Defaults to `false`.
+    ///   - useIPAddressForGeoLocation: If `false`, Mixpanel does not use the
+    ///     request's IP address to work out the user's location. Defaults to
+    ///     `true`, the SDK's default.
     public init(
         token: String,
         trackAutomaticEvents: Bool = false,
@@ -108,7 +116,9 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         superProperties: [String: AnalyticsValue]? = nil,
         serverURL: String? = nil,
         useGzipCompression: Bool = true,
-        excludeProperties: Set<String> = []
+        excludeProperties: Set<String> = [],
+        loggingEnabled: Bool = false,
+        useIPAddressForGeoLocation: Bool = true
     ) {
         assert(
             serverURL.map { URL(string: $0)?.host?.isEmpty == false } ?? true,
@@ -137,11 +147,22 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         // its lock, so a service built concurrently with another could get
         // the other project's instance. The by-name lookup is locked.
         let instance = Mixpanel.getInstance(name: name) ?? initialized
+        // The SDK has no options for these. Only values that differ from its
+        // defaults are written, so a service built with the defaults leaves an
+        // existing instance, and the process-wide logger, as they are.
+        if loggingEnabled {
+            instance.loggingEnabled = true
+        }
+        if !useIPAddressForGeoLocation {
+            instance.useIPAddressForGeoLocation = false
+        }
+        let session = Session(awaitingDefaultOptOut: consentPending)
         self.instance = instance
         self.superProperties = superProperties
+        self.session = session
         self.defaultOptOut =
             consentPending
-            ? Self.awaitDefaultOptOut(of: UncheckedInstance(instance))
+            ? Self.awaitDefaultOptOut(of: UncheckedInstance(instance), session: session)
             : nil
     }
 
@@ -154,6 +175,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     public init(instance: MixpanelInstance) {
         self.instance = instance
         self.superProperties = nil
+        self.session = Session(awaitingDefaultOptOut: false)
         self.defaultOptOut = nil
     }
 
@@ -404,26 +426,25 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         registerSuperProperties()
     }
 
-    /// `true` if the user has opted out, including an
-    /// `optOutTrackingByDefault` the SDK is still applying at first launch.
-    public func hasOptedOutTracking() async -> Bool {
-        await defaultOptOut?.value
-        return instance.hasOptedOutTracking()
-    }
-
-    // MARK: - Diagnostics
-
-    /// Toggles the Mixpanel SDK's internal logging. Set it once at launch:
-    /// the SDK does not synchronize this property.
-    public func setLoggingEnabled(_ enabled: Bool) async {
-        instance.loggingEnabled = enabled
-    }
-
-    /// Toggles whether Mixpanel uses the request's IP address for geo
-    /// resolution. Set it once at launch: the SDK does not synchronize this
-    /// property.
-    public func setUseIPAddressForGeoLocation(_ enabled: Bool) async {
-        instance.useIPAddressForGeoLocation = enabled
+    /// Whether the user is opted out of tracking. It answers at once, so it
+    /// can seed the plugin's `AnalyticsState(isOptedOut:)` when the store is
+    /// built.
+    ///
+    /// At launch it reports the choice the SDK loaded from storage. With
+    /// `optOutTrackingByDefault` and no stored choice it is `true` as soon as
+    /// the initializer returns, even though the SDK applies that default on
+    /// its own queue a moment later.
+    ///
+    /// A change made through ``setOptedOut(_:)``, ``optOutTracking()``, or
+    /// ``optInTracking(distinctID:properties:)`` shows here by the time that
+    /// call returns. Read while the change is still in progress, it gives
+    /// the old value or the new one. ``reset()`` does not change it.
+    ///
+    /// With ``init(instance:)`` it reads only the SDK's flag, which shows
+    /// the user as opted in until the SDK has applied its
+    /// `optOutTrackingByDefault`.
+    public var isOptedOut: Bool {
+        session.isAwaitingDefaultOptOut || instance.hasOptedOutTracking()
     }
 
     // MARK: - Helpers
@@ -495,11 +516,15 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// A `flush` issued now queues behind the opt-out (or, if it has already
     /// run, completes at once) and sends nothing: its network step checks the
     /// flag again and finds it set.
-    private static func awaitDefaultOptOut(of instance: UncheckedInstance) -> Task<Void, Never> {
+    private static func awaitDefaultOptOut(
+        of instance: UncheckedInstance,
+        session: Session
+    ) -> Task<Void, Never> {
         Task {
             await withCheckedContinuation { continuation in
                 instance.value.flush { continuation.resume() }
             }
+            session.defaultOptOutApplied()
         }
     }
 
@@ -571,6 +596,11 @@ extension MixpanelAnalyticsService {
     final class Session: Sendable {
         private let identifiedUserID = Mutex<String?>(nil)
         private let consentChoice = Mutex(false)
+        private let awaitingDefaultOptOut: Mutex<Bool>
+
+        init(awaitingDefaultOptOut: Bool) {
+            self.awaitingDefaultOptOut = Mutex(awaitingDefaultOptOut)
+        }
 
         /// Records `userID` as identified; `true` when that is a change from
         /// the user identified before (or nobody known).
@@ -592,6 +622,17 @@ extension MixpanelAnalyticsService {
 
         var hasConsentChoice: Bool {
             consentChoice.withLock { $0 }
+        }
+
+        /// `true` from launch until the SDK has applied
+        /// `optOutTrackingByDefault`; until then the SDK's own flag still
+        /// reads as opted in.
+        var isAwaitingDefaultOptOut: Bool {
+            awaitingDefaultOptOut.withLock { $0 }
+        }
+
+        func defaultOptOutApplied() {
+            awaitingDefaultOptOut.withLock { $0 = false }
         }
     }
 

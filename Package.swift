@@ -22,7 +22,8 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiduxAnalytics", package: "Swidux"),
                 .product(name: "Mixpanel", package: "mixpanel-swift"),
-            ]
+            ],
+            swiftSettings: [.enableUpcomingFeature("InternalImportsByDefault")]
         ),
         .testTarget(
             name: "SwiduxMixpanelAnalyticsTests",
