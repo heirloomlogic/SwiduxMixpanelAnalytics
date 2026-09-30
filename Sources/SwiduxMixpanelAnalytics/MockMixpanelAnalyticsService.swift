@@ -3,7 +3,8 @@
 //  SwiduxMixpanelAnalytics
 //
 
-import SwiduxAnalytics
+public import SwiduxAnalytics
+import Synchronization
 
 /// Recording `AnalyticsService` for previews and Swift Testing suites.
 ///
@@ -11,16 +12,15 @@ import SwiduxAnalytics
 /// `identifyCalls`, `aliasCalls`, `resetCount`, and `flushCount` after
 /// awaiting the plugin's `flush()` sync point.
 ///
-/// Mirrors the Mixpanel-specific runtime surface on
-/// ``MixpanelAnalyticsService`` (consent / logging / geo) so test code that
-/// exercises GDPR or diagnostic flows can verify the same calls against
-/// either the real adapter or the mock — including wiring
-/// ``setOptedOut(_:)`` as the plugin's `onConsentChange` hook.
+/// Mirrors the consent surface of ``MixpanelAnalyticsService`` so test code
+/// that exercises GDPR flows can verify the same calls against either the
+/// real adapter or the mock — including wiring ``setOptedOut(_:)`` as the
+/// plugin's `onConsentChange` hook.
 ///
 /// > Note: Unlike the real SDK, the mock keeps recording `track` / `identify`
 /// > calls while opted out — a recording mock should never lose history. To
-/// > assert consent behavior, check ``optedOut`` (or
-/// > ``hasOptedOutTracking()``) rather than the absence of recorded events.
+/// > assert consent behavior, check ``isOptedOut`` rather than the absence
+/// > of recorded events.
 public actor MockMixpanelAnalyticsService: AnalyticsService {
     /// Captured arguments from a single `identify(userID:properties:)` call.
     public struct IdentifyCall: Sendable, Equatable {
@@ -79,21 +79,20 @@ public actor MockMixpanelAnalyticsService: AnalyticsService {
     public private(set) var optOutCount = 0
     /// Every opt-in call recorded by `optInTracking(distinctID:properties:)`.
     public private(set) var optInCalls: [OptInCall] = []
-    /// The mock's current opt-out state, toggled by ``setOptedOut(_:)``,
+    /// The mock's current opt-out state, set by ``setOptedOut(_:)``,
     /// `optOutTracking()`, and `optInTracking(distinctID:properties:)`.
-    public private(set) var optedOut: Bool
-    /// Last value passed to `setLoggingEnabled(_:)`. `nil` if never set.
-    public private(set) var loggingEnabled: Bool?
-    /// Last value passed to `setUseIPAddressForGeoLocation(_:)`. `nil` if
-    /// never set.
-    public private(set) var useIPAddressForGeoLocation: Bool?
+    /// Synchronous, like ``MixpanelAnalyticsService/isOptedOut``.
+    public nonisolated var isOptedOut: Bool {
+        optedOut.withLock { $0 }
+    }
+    private let optedOut: Mutex<Bool>
 
     /// Creates an empty recording service.
     ///
     /// - Parameter optedOut: The initial opt-out state, standing in for the
     ///   real service's `optOutTrackingByDefault`. Defaults to `false`.
     public init(optedOut: Bool = false) {
-        self.optedOut = optedOut
+        self.optedOut = Mutex(optedOut)
     }
 
     /// Records the event in `trackedEvents`.
@@ -131,33 +130,18 @@ public actor MockMixpanelAnalyticsService: AnalyticsService {
         }
     }
 
-    /// Increments `optOutCount` and flips `optedOut` to `true`.
+    /// Increments `optOutCount` and sets ``isOptedOut`` to `true`.
     public func optOutTracking() async {
         optOutCount += 1
-        optedOut = true
+        optedOut.withLock { $0 = true }
     }
 
-    /// Records the opt-in call and flips `optedOut` to `false`.
+    /// Records the opt-in call and sets ``isOptedOut`` to `false`.
     public func optInTracking(
         distinctID: String? = nil,
         properties: [String: AnalyticsValue]? = nil
     ) async {
         optInCalls.append(OptInCall(distinctID: distinctID, properties: properties))
-        optedOut = false
-    }
-
-    /// Returns the mock's tracked opt-out state.
-    public func hasOptedOutTracking() async -> Bool {
-        optedOut
-    }
-
-    /// Records the requested logging state.
-    public func setLoggingEnabled(_ enabled: Bool) async {
-        loggingEnabled = enabled
-    }
-
-    /// Records the requested geo-by-IP state.
-    public func setUseIPAddressForGeoLocation(_ enabled: Bool) async {
-        useIPAddressForGeoLocation = enabled
+        optedOut.withLock { $0 = false }
     }
 }

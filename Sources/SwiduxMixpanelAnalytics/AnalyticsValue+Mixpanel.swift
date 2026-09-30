@@ -24,11 +24,11 @@ extension AnalyticsValue {
     /// The SDK cannot send a JSON `null`: it re-serializes queued data at
     /// flush time and turns every `NSNull` into the string `"<null>"`. So
     /// nulls are omitted wherever they can be — inside arrays and
-    /// dictionaries here, and at the top level in
-    /// ``Swift/Dictionary/toMixpanelProperties()``. Non-finite doubles count
-    /// as null, because the SDK asserts on them (a crash in Debug builds) and
-    /// otherwise sends the strings `"nan"` / `"inf"`.
-    public func toMixpanelType() -> any MixpanelType {
+    /// dictionaries here, and at the top level in `toMixpanelProperties()`.
+    /// Non-finite doubles count as null, because the SDK asserts on them (a
+    /// crash in Debug builds) and otherwise sends the strings `"nan"` /
+    /// `"inf"`.
+    func toMixpanelType() -> any MixpanelType {
         switch self {
         case .string(let value): return value
         case .int(let value): return value
@@ -52,7 +52,7 @@ extension Dictionary where Key == String, Value == AnalyticsValue {
     /// Builds a Mixpanel `Properties` dictionary from a typed
     /// `[String: AnalyticsValue]` map, omitting entries that translate to
     /// null — the SDK would send them as the string `"<null>"`.
-    public func toMixpanelProperties() -> Properties {
+    func toMixpanelProperties() -> Properties {
         compactMapValues(\.nonNullMixpanelValue)
     }
 }

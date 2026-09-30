@@ -187,6 +187,7 @@ struct MixpanelCapturePipelineTests {
         instanceName: String = "capture-\(UUID().uuidString)",
         excludeProperties: Set<String> = [],
         optOutTrackingByDefault: Bool = false,
+        deviceIdProvider: (@Sendable () -> String?)? = nil,
         superProperties: [String: AnalyticsValue]? = nil
     ) -> MixpanelAnalyticsService {
         _ = MixpanelCaptureURLProtocol.registerOnce
@@ -196,6 +197,7 @@ struct MixpanelCapturePipelineTests {
             flushInterval: 3600,
             instanceName: instanceName,
             optOutTrackingByDefault: optOutTrackingByDefault,
+            deviceIdProvider: deviceIdProvider,
             superProperties: superProperties,
             serverURL: "https://\(MixpanelCaptureURLProtocol.host)",
             useGzipCompression: false,
@@ -361,11 +363,132 @@ struct MixpanelCapturePipelineTests {
         #expect(!events.contains { $0["distinct_id"] as? String == userID })
     }
 
-    /// `hasOptedOutTracking()` must reflect `optOutTrackingByDefault` from the
-    /// first call, not after the SDK's queue gets round to applying it.
-    @Test func optOutByDefaultIsVisibleImmediately() async {
-        let service = Self.makeService(token: UUID().uuidString, optOutTrackingByDefault: true)
-        #expect(await service.hasOptedOutTracking())
+    // MARK: - Consent query
+
+    /// On a first launch with `optOutTrackingByDefault`, the SDK applies the
+    /// opt-out on its queue after `init` returns and reads as opted in until
+    /// then. `isOptedOut` must already say `true`. The test holds the SDK's
+    /// opt-out partway, inside its call to `deviceIdProvider`, where it also
+    /// holds the SDK's lock: a read of the SDK's flag would wait for the
+    /// release and fail the check below.
+    @Test func isOptedOutCoversTheDefaultStillQueued() async throws {
+        let hold = QueuedOptOutHold()
+        let service = hold.makeService()
+        try await hold.waitUntilHeld()
+
+        #expect(service.isOptedOut)
+        #expect(hold.release(), "isOptedOut waited for the SDK")
+        await service.flush()
+        #expect(service.isOptedOut)
+    }
+
+    /// With no stored choice, a first launch reports the default.
+    @Test(arguments: [false, true])
+    func isOptedOutOnFirstLaunchIsTheDefault(optOutTrackingByDefault: Bool) async throws {
+        let name = "capture-\(UUID().uuidString)"
+        let service = Self.makeService(
+            token: UUID().uuidString,
+            instanceName: name,
+            optOutTrackingByDefault: optOutTrackingByDefault
+        )
+        #expect(service.isOptedOut == optOutTrackingByDefault)
+
+        await service.flush()
+        #expect(service.isOptedOut == optOutTrackingByDefault)
+        #expect(try #require(Mixpanel.getInstance(name: name)).hasOptedOutTracking() == optOutTrackingByDefault)
+    }
+
+    /// A stored choice wins over `optOutTrackingByDefault` at launch, either
+    /// way round.
+    @Test(arguments: [false, true], [false, true])
+    func isOptedOutAtLaunchIsTheStoredChoice(optOutTrackingByDefault: Bool, optedOut: Bool) async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(
+            token: token,
+            instanceName: name,
+            optOutTrackingByDefault: optOutTrackingByDefault
+        )
+        // Both calls, so the last one is a change and is stored.
+        await firstLaunch.setOptedOut(!optedOut)
+        await firstLaunch.setOptedOut(optedOut)
+        #expect(MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name))
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(
+            token: token,
+            instanceName: name,
+            optOutTrackingByDefault: optOutTrackingByDefault
+        )
+        #expect(secondLaunch.isOptedOut == optedOut)
+
+        await secondLaunch.flush()
+        #expect(secondLaunch.isOptedOut == optedOut)
+        #expect(try #require(Mixpanel.getInstance(name: name)).hasOptedOutTracking() == optedOut)
+    }
+
+    /// A consent change shows by the time its call returns, and a sign-out
+    /// leaves the value as it was.
+    @Test func isOptedOutFollowsConsentChangesThroughReset() async {
+        let service = Self.makeService(token: UUID().uuidString)
+        #expect(!service.isOptedOut)
+        await service.reset()
+        #expect(!service.isOptedOut)
+
+        await service.setOptedOut(true)
+        #expect(service.isOptedOut)
+        await service.reset()
+        #expect(service.isOptedOut)
+
+        await service.setOptedOut(false)
+        #expect(!service.isOptedOut)
+        await service.reset()
+        #expect(!service.isOptedOut)
+    }
+
+    /// Builds a first-launch service with `optOutTrackingByDefault`, and stops
+    /// the first `deviceIdProvider` call made off the building thread — the
+    /// SDK's queued opt-out — until ``release()``, or for 5 seconds.
+    private final class QueuedOptOutHold: Sendable {
+        private let state = Mutex((builder: pthread_t?.none, held: false, timedOut: false))
+        private let gate = DispatchSemaphore(value: 0)
+        private let id = UUID().uuidString
+
+        /// Synchronous, so the whole initializer runs on the recorded thread.
+        func makeService() -> MixpanelAnalyticsService {
+            state.withLock { $0.builder = pthread_self() }
+            return MixpanelCapturePipelineTests.makeService(
+                token: UUID().uuidString,
+                optOutTrackingByDefault: true,
+                deviceIdProvider: { self.deviceID() }
+            )
+        }
+
+        private func deviceID() -> String {
+            let hold = state.withLock { state in
+                guard let builder = state.builder, pthread_equal(builder, pthread_self()) == 0, !state.held
+                else { return false }
+                state.held = true
+                return true
+            }
+            if hold, gate.wait(timeout: .now() + 5) == .timedOut {
+                state.withLock { $0.timedOut = true }
+            }
+            return id
+        }
+
+        func waitUntilHeld() async throws {
+            try await MixpanelCapturePipelineTests.waitUntil("the SDK never ran its default opt-out") {
+                state.withLock { $0.held }
+            }
+        }
+
+        /// Ends the hold; `false` if it had already timed out.
+        func release() -> Bool {
+            let stillHeld = state.withLock { !$0.timedOut }
+            gate.signal()
+            return stillHeld
+        }
     }
 
     /// The SDK's opt-out queues a `$delete` for the current user, but stores it
@@ -466,7 +589,7 @@ struct MixpanelCapturePipelineTests {
 
         Mixpanel.removeInstance(name: name)
         let secondLaunch = Self.makeService(token: token, instanceName: name)
-        #expect(await secondLaunch.hasOptedOutTracking())
+        #expect(secondLaunch.isOptedOut)
     }
 
     /// The same erasure hit an opt-in: with `optOutTrackingByDefault`, a user
@@ -479,11 +602,11 @@ struct MixpanelCapturePipelineTests {
         await firstLaunch.optInTracking()
         await firstLaunch.flush()
         await firstLaunch.reset()
-        #expect(!(await firstLaunch.hasOptedOutTracking()))
+        #expect(!firstLaunch.isOptedOut)
 
         Mixpanel.removeInstance(name: name)
         let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
-        #expect(!(await secondLaunch.hasOptedOutTracking()))
+        #expect(!secondLaunch.isOptedOut)
         await secondLaunch.track(AnalyticsEvent("after-relaunch"))
         await secondLaunch.flush()
         #expect(Self.eventNames(token: token).filter { $0 == "$opt_in" }.count == 1)
@@ -502,7 +625,7 @@ struct MixpanelCapturePipelineTests {
 
         Mixpanel.removeInstance(name: name)
         let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
-        #expect(await secondLaunch.hasOptedOutTracking())
+        #expect(secondLaunch.isOptedOut)
     }
 
     /// Two consent changes while a sign-out is uploading: the last one, an
@@ -521,11 +644,11 @@ struct MixpanelCapturePipelineTests {
         await firstLaunch.optInTracking()
         release.signal()
         await signingOut.value
-        #expect(!(await firstLaunch.hasOptedOutTracking()))
+        #expect(!firstLaunch.isOptedOut)
 
         Mixpanel.removeInstance(name: name)
         let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
-        #expect(!(await secondLaunch.hasOptedOutTracking()))
+        #expect(!secondLaunch.isOptedOut)
     }
 
     /// An opt-in erases the persisted flag with its own SDK `reset()` and
@@ -544,10 +667,8 @@ struct MixpanelCapturePipelineTests {
 
         await firstLaunch.optOutTracking()
         await firstLaunch.optInTracking()
-        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-        while !MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name) {
-            try #require(ContinuousClock.now < deadline, "the opt-in was never persisted")
-            try await Task.sleep(for: .milliseconds(1))
+        try await Self.waitUntil("the opt-in was never persisted") {
+            MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name)
         }
         UserDefaults(suiteName: "Mixpanel")?.removeObject(forKey: "mixpanel-\(name)-OptOutStatus")
         release.signal()
@@ -555,7 +676,7 @@ struct MixpanelCapturePipelineTests {
 
         Mixpanel.removeInstance(name: name)
         let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
-        #expect(!(await secondLaunch.hasOptedOutTracking()))
+        #expect(!secondLaunch.isOptedOut)
     }
 
     // MARK: - Consent withdrawal
@@ -584,10 +705,16 @@ struct MixpanelCapturePipelineTests {
 
     /// Waits until a request carrying `token` has been captured.
     private static func waitForRequest(token: String) async throws {
+        try await waitUntil("no request arrived") { MixpanelCaptureURLProtocol.requestCount(token: token) > 0 }
+    }
+
+    /// Polls `condition` every millisecond, failing the test with `message`
+    /// after 10 seconds.
+    private static func waitUntil(_ message: Comment, _ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-        while MixpanelCaptureURLProtocol.requestCount(token: token) == 0 {
-            try #require(ContinuousClock.now < deadline, "no request arrived")
-            try await Task.sleep(for: .milliseconds(5))
+        while !condition() {
+            try #require(ContinuousClock.now < deadline, message)
+            try await Task.sleep(for: .milliseconds(1))
         }
     }
 
@@ -611,7 +738,7 @@ struct MixpanelCapturePipelineTests {
         _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
         await plugin.flush()
 
-        #expect(await service.hasOptedOutTracking())
+        #expect(service.isOptedOut)
         #expect(MixpanelCaptureURLProtocol.requestCount(token: token) == 0)
 
         _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
@@ -648,7 +775,7 @@ struct MixpanelCapturePipelineTests {
 
         Mixpanel.removeInstance(name: name)
         let secondLaunch = Self.makeService(token: token, instanceName: name)
-        #expect(await secondLaunch.hasOptedOutTracking())
+        #expect(secondLaunch.isOptedOut)
 
         let instance = try #require(Mixpanel.getInstance(name: name))
         instance.optInTracking()
@@ -728,11 +855,11 @@ struct MixpanelCapturePipelineTests {
         await firstLaunch.optOutTracking()
         release.signal()
         await signingOut.value
-        #expect(await firstLaunch.hasOptedOutTracking())
+        #expect(firstLaunch.isOptedOut)
 
         Mixpanel.removeInstance(name: name)
         let secondLaunch = Self.makeService(token: token, instanceName: name)
-        #expect(await secondLaunch.hasOptedOutTracking())
+        #expect(secondLaunch.isOptedOut)
     }
 
     // MARK: - Identity

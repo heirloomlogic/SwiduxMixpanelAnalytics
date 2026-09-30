@@ -79,15 +79,13 @@ struct MockMixpanelAnalyticsServiceTests {
 
     @Test func optOutTogglesStateAndIncrementsCount() async {
         let mock = MockMixpanelAnalyticsService()
-        #expect(await mock.optedOut == false)
-        #expect(await mock.hasOptedOutTracking() == false)
+        #expect(!mock.isOptedOut)
 
         await mock.optOutTracking()
         await mock.optOutTracking()
 
         #expect(await mock.optOutCount == 2)
-        #expect(await mock.optedOut == true)
-        #expect(await mock.hasOptedOutTracking() == true)
+        #expect(mock.isOptedOut)
     }
 
     @Test func optInRecordsCallAndClearsOptOutState() async {
@@ -108,32 +106,19 @@ struct MockMixpanelAnalyticsServiceTests {
                     distinctID: "user-1",
                     properties: ["tier": .string("pro")]))
         #expect(calls[1] == .init(distinctID: nil, properties: nil))
-        #expect(await mock.optedOut == false)
-        #expect(await mock.hasOptedOutTracking() == false)
-    }
-
-    @Test func recordsLoggingAndGeoToggles() async {
-        let mock = MockMixpanelAnalyticsService()
-        #expect(await mock.loggingEnabled == nil)
-        #expect(await mock.useIPAddressForGeoLocation == nil)
-
-        await mock.setLoggingEnabled(true)
-        await mock.setUseIPAddressForGeoLocation(false)
-
-        #expect(await mock.loggingEnabled == true)
-        #expect(await mock.useIPAddressForGeoLocation == false)
+        #expect(!mock.isOptedOut)
     }
 
     @Test func setOptedOutRoutesToOptOutAndOptIn() async {
         let mock = MockMixpanelAnalyticsService(optedOut: true)
-        #expect(await mock.hasOptedOutTracking())
+        #expect(mock.isOptedOut)
 
         await mock.setOptedOut(false)
         #expect(await mock.optInCalls == [.init()])
-        #expect(await mock.hasOptedOutTracking() == false)
+        #expect(!mock.isOptedOut)
 
         await mock.setOptedOut(true)
         #expect(await mock.optOutCount == 1)
-        #expect(await mock.hasOptedOutTracking())
+        #expect(mock.isOptedOut)
     }
 }

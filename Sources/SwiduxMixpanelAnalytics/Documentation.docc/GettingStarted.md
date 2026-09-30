@@ -50,7 +50,7 @@ struct MyApp: App {
 }
 ```
 
-The initializer surfaces every Mixpanel knob the app would otherwise need to set on `Mixpanel.initialize` (EU `serverURL`, `optOutTrackingByDefault`, `flushInterval`, `instanceName`, `superProperties`, `useGzipCompression`, `trackAutomaticEvents`, `excludeProperties`) and is identical on every platform. Pick what you need; everything else has a sensible default. See <doc:HowToImplementService> for the longer treatment.
+The initializer takes most of the settings the app would otherwise pass to `Mixpanel.initialize` (EU `serverURL`, `optOutTrackingByDefault`, `flushInterval`, `instanceName`, `superProperties`, `useGzipCompression`, `trackAutomaticEvents`, `excludeProperties`, `useUniqueDistinctId`, `deviceIdProvider`), plus `loggingEnabled` and `useIPAddressForGeoLocation`, which the SDK only offers as instance properties. It is identical on every platform. Pick what you need; everything else has a sensible default. See <doc:HowToImplementService> for the longer treatment.
 
 ## Register the plugin with `MixpanelAnalyticsService`
 
@@ -103,6 +103,8 @@ So keep the user's consent choice in your own storage (`ConsentStore` above stan
 ```swift
 .task { store.send(.analytics(.setOptedOut(ConsentStore.isOptedOut))) }
 ```
+
+If Mixpanel's own record of the choice is enough, seed the flag from the service's synchronous `isOptedOut` instead. The two then agree from the start, and no launch dispatch is needed; see <doc:HowToImplementService>. Consent changes and `reset()` do erase Mixpanel's stored choice for a moment before writing it back. An app killed in that moment starts the next launch from `optOutTrackingByDefault`. Keeping your own copy and dispatching it at launch, as above, covers that case.
 
 Repeating a consent value is harmless: opting in a user who already consented sends nothing, and opting out an opted-out user does nothing.
 
