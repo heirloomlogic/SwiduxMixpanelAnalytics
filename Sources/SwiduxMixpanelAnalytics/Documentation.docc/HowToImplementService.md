@@ -134,7 +134,7 @@ This holds when the plugin calls `identify` for you: if you drop a key from the 
 
 Each property you pass is sent whole, and the new value replaces the saved one. A null inside an array or dictionary is dropped before sending, so it does not delete anything by itself, but the rest of that value replaces the saved value. If `prefs` is saved as `{theme: dark}` and you identify with `["prefs": .dict(["theme": .null])]`, the adapter sends `prefs` as `{}` and `theme` is gone from the saved value. To keep the other entries of a dictionary, send them again. See <doc:ValueTranslation> for the translation rules.
 
-Every `$set` the adapter sends also carries properties the Mixpanel SDK adds itself: `$ios_device_model`, `$ios_version`, `$ios_lib_version` and `$swift_lib_version`, plus `$ios_app_version` and `$ios_app_release` when the app's Info.plist provides them. They are sent whenever a call has at least one property that is not null. A call whose properties are empty or all null sends no `$set`.
+Every `$set` the adapter sends also carries the SDK's own automatic people properties (for example `$ios_device_model` and `$swift_lib_version`), except any listed in `excludeProperties`. They are sent whenever a call has at least one property that is not null. A call whose properties are empty or all null sends no `$set`.
 
 ## Exclude properties
 

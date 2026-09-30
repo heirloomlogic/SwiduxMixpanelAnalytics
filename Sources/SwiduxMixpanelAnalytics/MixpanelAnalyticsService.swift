@@ -177,11 +177,10 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// value replaces the saved value: identifying with
     /// `["prefs": .dict(["theme": .null])]` sends `prefs` as `{}`.
     ///
-    /// Every `$set` also carries properties the Mixpanel SDK adds itself
-    /// (`$ios_device_model`, `$ios_version`, `$ios_lib_version`,
-    /// `$swift_lib_version`, and `$ios_app_version` / `$ios_app_release` when
-    /// the app's Info.plist has them). A call whose properties are empty or
-    /// all null sends no `$set`.
+    /// Every `$set` also carries the SDK's automatic people properties (for
+    /// example `$ios_device_model` and `$swift_lib_version`), except any listed
+    /// in `excludeProperties`. A call whose properties are empty or all null
+    /// sends no `$set`.
     ///
     /// Empty `userID`s are dropped entirely: the SDK rejects blank distinct
     /// IDs, and forwarding the people update anyway would attribute it to the

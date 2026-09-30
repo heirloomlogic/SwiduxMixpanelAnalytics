@@ -246,10 +246,10 @@ struct MixpanelCapturePipelineTests {
     }
 
     /// Excluded keys must also be stripped from People `$set` updates that ride
-    /// out on `/engage/`.
+    /// out on `/engage/`, including the properties the SDK adds itself.
     @Test func excludedPropertiesStrippedFromPeopleSet() async throws {
         let token = UUID().uuidString
-        let service = Self.makeService(token: token, excludeProperties: ["email"])
+        let service = Self.makeService(token: token, excludeProperties: ["email", "$ios_device_model"])
         await service.identify(
             userID: "u-\(UUID().uuidString)",
             properties: [
@@ -265,6 +265,8 @@ struct MixpanelCapturePipelineTests {
         let set = try #require(setPayload["$set"] as? [String: Any])
         #expect(set["tier"] != nil)
         #expect(set["email"] == nil)
+        #expect(set["$ios_device_model"] == nil)
+        #expect(set["$swift_lib_version"] != nil)
     }
 
     /// Opt-out drops events before they reach the wire; the subsequent opt-in
