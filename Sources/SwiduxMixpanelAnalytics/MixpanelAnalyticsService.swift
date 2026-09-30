@@ -34,7 +34,16 @@ import os
 ///
 /// The struct is `@unchecked Sendable`: `MixpanelInstance` serializes its
 /// tracking work on internal queues, and every copy of the service shares one
-/// SDK instance.
+/// SDK instance. The exceptions are `loggingEnabled` and
+/// `useIPAddressForGeoLocation`: the initializer writes them to SDK
+/// properties that are not synchronized, while the SDK's queues may still be
+/// running work for the instance. When the SDK is compiled for Debug,
+/// turning logging on reads the instance's super properties without the
+/// lock its tracking queue writes them under, and the work
+/// `Mixpanel.initialize` queues writes them when there are super properties
+/// or a default opt-out to apply. Flushes read the geolocation setting on
+/// the SDK's network queue, so a second service with the same name can
+/// write it during a flush.
 public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     private let instance: MixpanelInstance
     /// Init-time super properties, re-registered whenever the SDK drops them
@@ -56,8 +65,12 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// > Important: The Mixpanel SDK keys instances by `instanceName` (falling
     /// > back to `token`). Constructing a second service with the same name
     /// > returns the *existing* SDK instance and silently ignores the new
-    /// > options, apart from a `loggingEnabled: true` or
-    /// > `useIPAddressForGeoLocation: false`, which still apply to it.
+    /// > options, with two exceptions. A `loggingEnabled: true` or
+    /// > `useIPAddressForGeoLocation: false` still applies to it. And with
+    /// > `optOutTrackingByDefault: true` and no stored consent choice, the new
+    /// > service reports ``isOptedOut`` as `true`, even if the instance is
+    /// > opted in, until a flush it starts on the instance completes; its
+    /// > consent, `identify`, `alias`, and `reset` calls wait for that flush.
     /// > Construct the service once, where the store is configured, rather
     /// > than per view or per preview.
     ///

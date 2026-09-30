@@ -4,7 +4,7 @@ Configure `MixpanelAnalyticsService` to match your privacy, residency, and batch
 
 ## Overview
 
-``MixpanelAnalyticsService`` is the configuration boundary: every Mixpanel knob worth setting at launch is a parameter on the initializer, and consent controls are methods on the service. The Mixpanel SDK stays a private implementation detail of this package.
+``MixpanelAnalyticsService`` is the configuration boundary: the initializer takes the Mixpanel settings most apps set at launch, and consent controls are methods on the service. The Mixpanel SDK stays a private implementation detail of this package.
 
 ## Default initialization
 
@@ -16,7 +16,7 @@ let service = MixpanelAnalyticsService(token: "your-token")
 
 Defaults match the Mixpanel SDK's `MixpanelOptions`: `flushInterval: 60`, `optOutTrackingByDefault: false`, gzip on, a random-UUID anonymous ID, `trackAutomaticEvents: false`. The initializer is the same on every platform.
 
-> Important: The Mixpanel SDK keys instances by `instanceName` (falling back to `token`). Constructing a second service with the same name returns the *existing* SDK instance and silently ignores the new options, apart from a `loggingEnabled: true` or `useIPAddressForGeoLocation: false`, which still apply to it. Construct the service once, where the store is configured — not per view, per preview, or per test.
+> Important: The Mixpanel SDK keys instances by `instanceName` (falling back to `token`). Constructing a second service with the same name returns the *existing* SDK instance and silently ignores the new options, with two exceptions. A `loggingEnabled: true` or `useIPAddressForGeoLocation: false` still applies to it. And with `optOutTrackingByDefault: true` and no stored consent choice, the new service reports `isOptedOut` as `true`, even if the instance is opted in, until a flush it starts on the instance completes; its consent, `identify`, `alias`, and `reset()` calls wait for that flush. Construct the service once, where the store is configured — not per view, per preview, or per test.
 
 > Important: `serverURL` must be an absolute URL with a scheme and host. Requests to anything else fail, and a string that isn't a URL at all makes every `flush()` wait out the SDK's 120-second request timeout. The adapter asserts on this in Debug builds.
 
