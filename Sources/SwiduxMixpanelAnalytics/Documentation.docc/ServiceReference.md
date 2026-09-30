@@ -99,9 +99,11 @@ Calls `optOutTracking()` for `true` and `optInTracking()` for `false`. Shaped fo
 
 #### `optOutTracking() async`
 
-Sends everything queued, resets the local identity, then forwards to `MixpanelInstance.optOutTracking()` and returns once the SDK has applied it. From then on `track`, `identify`, and `alias` are dropped until ``MixpanelAnalyticsService/optInTracking(distinctID:properties:)``. Does nothing when already opted out. Persists across launches.
+Forwards to `MixpanelInstance.optOutTracking()`, then deletes everything queued and resets the local identity with `MixpanelInstance.reset(completion:)`, and returns once the SDK has applied it. Nothing queued is sent, and the call does not wait for the network. From then on `track`, `identify`, and `alias` are dropped until ``MixpanelAnalyticsService/optInTracking(distinctID:properties:)``. Does nothing when already opted out. Persists across launches: the SDK's `reset()` erases the persisted opt-out, so the adapter opts out a second time to write it back.
 
-It does **not** delete the user's Mixpanel profile. The SDK's own opt-out queues a `$delete` that is never sent and that would later delete the next identified user's profile; resetting the identity first stops it being queued. Use Mixpanel's GDPR deletion API from your server to erase data.
+An upload already in progress is not cancelled. The SDK checks consent when a flush starts and before it moves from events to profile updates, but not between requests. A flush that is already sending events still sends every event it had read; for a full flush such as `flush()`, that is the whole event queue, 50 events per request. Profile updates that flush had read are not sent.
+
+It does **not** delete the user's Mixpanel profile. The SDK's own opt-out queues a `$delete` that is never sent and that would later delete the next identified user's profile; the adapter deletes it with the rest of the queue. Use Mixpanel's GDPR deletion API from your server to erase data.
 
 #### `optInTracking(distinctID:properties:) async`
 

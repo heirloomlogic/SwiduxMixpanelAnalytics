@@ -56,7 +56,9 @@ From then on `store.send(.analytics(.setOptedOut(_:)))` switches both the plugin
 
 Both directions return only once the SDK has applied them, so an `identify` dispatched straight after consent is honored and one dispatched straight after withdrawal is dropped. Mixpanel remembers the choice across launches; `optOutTrackingByDefault` only decides the state before the user has chosen.
 
-Opting out sends what was recorded while the user consented, then clears the local identity. It does **not** delete the user's Mixpanel profile or data — the SDK's own attempt at that is never sent, and the adapter suppresses it because it would later delete the next user's profile instead. Erase data with Mixpanel's GDPR deletion API from your server.
+Opting out deletes whatever is still queued instead of sending it, then clears the local identity, without waiting for the network. An upload that has already started is not cancelled: the SDK checks consent only when a flush starts and between its event and profile queues, so a flush already sending events finishes sending the events it had read. Signing out with `.analytics(.reset)` is different; it sends the queue first, so events recorded before sign-out keep their user.
+
+Opting out does **not** delete the user's Mixpanel profile or data. The SDK's own attempt at that is never sent, and the adapter discards it because it would later delete the next user's profile instead. Erase data with Mixpanel's GDPR deletion API from your server.
 
 `optInTracking(distinctID:properties:)` and `optOutTracking()` remain available for apps that don't route consent through the plugin.
 

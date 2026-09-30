@@ -28,8 +28,9 @@ import os
 /// The SDK applies most calls later, on its own serial queue, while checking
 /// the opt-out flag on the caller's thread. The adapter papers over the gaps
 /// that leaves: consent changes take effect before their `async` call
-/// returns, `flush()` drains the whole queue, and `reset()` keeps both queued
-/// events and a withdrawn consent.
+/// returns, `flush()` drains the whole queue, `reset()` keeps both queued
+/// events and a withdrawn consent, and opting out deletes the queue instead
+/// of leaving it to be sent later.
 ///
 /// The struct is `@unchecked Sendable`: `MixpanelInstance` serializes its
 /// tracking work on internal queues, and every copy of the service shares one
@@ -236,14 +237,28 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// While opted out this only forgets the adapter's record of the user.
     /// Opting out has already cleared the SDK's identity and queue, and the
     /// SDK's `reset()` would also erase the persisted opt-out — the user
-    /// would be tracked again from the next launch.
+    /// would be tracked again from the next launch. If the user opts out while
+    /// this is still sending, the opt-out is written back after the SDK's
+    /// `reset()` erases it.
     public func reset() async {
         await defaultOptOut?.value
         guard !instance.hasOptedOutTracking() else {
             session.forgetUser()
             return
         }
-        await clearIdentity()
+        // The full flush must finish first: the SDK's `reset()` flushes a
+        // partial batch of its own, which would send the same records twice.
+        await flush()
+        await resetSDK()
+        // An opt-out does not wait for the network, so one can finish while
+        // the flush above is uploading. The SDK's `reset()` then deletes the
+        // persisted flag but keeps the in-memory one, which this checks. An
+        // opt-out still queued at this point runs later and persists itself.
+        guard !instance.hasOptedOutTracking() else {
+            instance.optOutTracking()
+            await awaitPersistedOptOut()
+            return
+        }
         registerSuperProperties()
     }
 
@@ -293,21 +308,39 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// until ``optInTracking(distinctID:properties:)``. Does nothing if the
     /// user is already opted out. The choice persists across launches.
     ///
-    /// Everything recorded before the opt-out is sent first, and the local
-    /// identity is reset, as ``reset()`` does.
+    /// Queued events and People updates are deleted, not sent, and the local
+    /// identity is reset. This does not wait for the network.
+    ///
+    /// An upload already in progress is not cancelled. The SDK checks consent
+    /// when a flush starts and before it moves from events to People updates,
+    /// but not between requests. A flush that is already sending events
+    /// therefore still sends every event it had read: for a full flush such
+    /// as ``flush()``, that is the whole event queue, 50 per request.
     ///
     /// > Important: This does not delete the user's Mixpanel profile or data.
     /// > The SDK's own opt-out queues a profile deletion but never sends it —
     /// > the leftover request would later delete the *next* identified user's
-    /// > profile instead — so the adapter resets the identity before opting
-    /// > out, and none is queued. To erase a user's data, use Mixpanel's GDPR
-    /// > deletion API from your server.
+    /// > profile instead — so the adapter discards it with the rest of the
+    /// > queue. To erase a user's data, use Mixpanel's GDPR deletion API from
+    /// > your server.
     public func optOutTracking() async {
         await defaultOptOut?.value
         guard !instance.hasOptedOutTracking() else { return }
-        await clearIdentity()
         instance.optOutTracking()
-        await Self.awaitQueuedOptOut(of: instance)
+        // Once the flag is set, the SDK has queued its `$delete` and starts no
+        // more uploads, so its `reset()` below cannot send a batch first. A
+        // `flush` completion would not do as the wait: it also waits for any
+        // upload already in flight.
+        await poll(until: { instance.hasOptedOutTracking() }, "an opt-out")
+        // `reset()` deletes every queued row but also the persisted opt-out;
+        // the second opt-out writes it back. Once `reset` completes, the
+        // persisted flag is absent only until that opt-out has run.
+        await withCheckedContinuation { continuation in
+            instance.reset { continuation.resume() }
+            instance.optOutTracking()
+        }
+        await awaitPersistedOptOut()
+        session.forgetUser()
     }
 
     /// Opts the user back into tracking and returns once the SDK has applied
@@ -340,10 +373,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         // opt-out on an identified install, or a direct SDK call) leaves an
         // unattributed `$delete` that the next identify would adopt. Identity
         // is already anonymous, so this loses no one's data.
-        await withCheckedContinuation { continuation in
-            instance.reset { continuation.resume() }
-        }
-        session.forgetUser()
+        await resetSDK()
         if let distinctID {
             _ = session.identify(distinctID)
         }
@@ -351,7 +381,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
             distinctId: distinctID,
             properties: Self.nonEmptyProperties(properties)
         )
-        await awaitOptIn()
+        await poll(until: { !instance.hasOptedOutTracking() }, "an opt-in")
         registerSuperProperties()
     }
 
@@ -386,11 +416,10 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         return properties.toMixpanelProperties()
     }
 
-    /// Sends everything queued, then resets the SDK's identity. The full flush
-    /// must finish first: the SDK's `reset()` flushes a partial batch of its
-    /// own, which would otherwise send the same records a second time.
-    private func clearIdentity() async {
-        await flush()
+    /// Resets the SDK's identity and deletes its queue, then forgets the user.
+    /// While opted in, the SDK's `reset()` sends one batch before deleting the
+    /// rest.
+    private func resetSDK() async {
         await withCheckedContinuation { continuation in
             instance.reset { continuation.resume() }
         }
@@ -402,21 +431,23 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         instance.registerSuperProperties(superProperties)
     }
 
-    /// Suspends until the SDK's opt-out flag reads `false`.
+    /// Suspends until `condition` holds — used to wait for a consent change
+    /// queued on the SDK.
     ///
-    /// The SDK clears the flag on its serial tracking queue but checks it on
+    /// The SDK applies consent on its serial tracking queue but checks it on
     /// the caller's thread in `identify`, `flush`, and People calls, and
-    /// offers neither a completion nor a side-effect-free way to wait on that
-    /// queue while opted out — so the adapter watches the flag. It normally
-    /// flips within a millisecond; the bound only stops a stalled queue from
-    /// holding consent forever, and hitting it is logged as a fault.
-    private func awaitOptIn() async {
+    /// offers no completion. The only calls that wait on that queue either
+    /// have side effects or also wait for the network, so the adapter watches
+    /// the result instead. It normally shows within a millisecond; the bound
+    /// only stops a stalled queue from holding consent forever, and hitting
+    /// it is logged as a fault.
+    private func poll(until condition: () -> Bool, _ change: String) async {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(30))
         var interval = Duration.milliseconds(1)
-        while instance.hasOptedOutTracking() {
+        while !condition() {
             guard clock.now < deadline else {
-                Self.logger.fault("Mixpanel did not apply an opt-in within 30 s")
+                Self.logger.fault("Mixpanel did not apply \(change, privacy: .public) within 30 s")
                 return
             }
             do {
@@ -428,22 +459,29 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         }
     }
 
-    /// Suspends until an opt-out already queued on the SDK's tracking queue
-    /// has run. A `flush` issued now queues behind it (or, if it has already
-    /// run, completes at once) and sends nothing: its network step checks
-    /// the flag again and finds it set.
-    private static func awaitQueuedOptOut(of instance: MixpanelInstance) async {
-        await withCheckedContinuation { continuation in
-            instance.flush { continuation.resume() }
-        }
+    /// Suspends until the SDK has persisted an opt-out queued just before —
+    /// needed after a `reset()`, which deletes the stored flag.
+    private func awaitPersistedOptOut() async {
+        await poll(
+            until: { Self.hasPersistedConsentChoice(instanceName: instance.name) },
+            "a persisted opt-out"
+        )
     }
 
     /// With `optOutTrackingByDefault` and no consent choice persisted yet,
     /// the SDK queues its opt-out during `Mixpanel.initialize`, and reads as
     /// opted in until the queue gets to it. When a choice is persisted there
     /// is nothing to wait for, so this is only built on a first launch.
+    ///
+    /// A `flush` issued now queues behind the opt-out (or, if it has already
+    /// run, completes at once) and sends nothing: its network step checks the
+    /// flag again and finds it set.
     private static func awaitDefaultOptOut(of instance: UncheckedInstance) -> Task<Void, Never> {
-        Task { await awaitQueuedOptOut(of: instance.value) }
+        Task {
+            await withCheckedContinuation { continuation in
+                instance.value.flush { continuation.resume() }
+            }
+        }
     }
 
     /// The device's anonymous distinct ID, as its anonymous events carry it.

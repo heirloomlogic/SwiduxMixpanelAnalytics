@@ -34,7 +34,8 @@ import Testing
 /// - `useGzipCompression: false` — the SDK only gzips `/track/` when this is
 ///   `true`, so captured bodies are directly JSON-decodable.
 /// - `flushInterval: 3600` — nothing sends until an explicit `flush()`; the
-///   stub responds synchronously, so no sleeps or polling are needed.
+///   stub responds synchronously, so no sleeps or polling are needed. The one
+///   exception is a request held on purpose with `holdNextRequest(token:)`.
 /// Serialize capture tests to limit concurrent requests through the shared URL session.
 @Suite("MixpanelCapturePipeline", .serialized, .timeLimit(.minutes(1)))
 struct MixpanelCapturePipelineTests {
@@ -50,6 +51,9 @@ struct MixpanelCapturePipelineTests {
     final class MixpanelCaptureURLProtocol: URLProtocol {
         static let host = "mixpanel-capture.invalid"
         private static let captured = Mutex<[CapturedRequest]>([])
+        /// Set by ``holdNextRequest(token:)``: the token to wait for and the
+        /// semaphore that releases the held request.
+        private static let hold = Mutex<(token: Data, release: DispatchSemaphore)?>(nil)
 
         /// Idempotent registration — reading this static once from `makeService`
         /// installs the protocol a single time for the whole test process.
@@ -72,6 +76,14 @@ struct MixpanelCapturePipelineTests {
             Self.captured.withLock {
                 $0.append(CapturedRequest(path: request.url?.path ?? "", body: body))
             }
+            let release = Self.hold.withLock { hold -> DispatchSemaphore? in
+                guard let pending = hold, body.range(of: pending.token) != nil else { return nil }
+                hold = nil
+                return pending.release
+            }
+            // Blocks this loader thread, and with it the SDK's network queue,
+            // which waits for each response before sending the next batch.
+            _ = release?.wait(timeout: .now() + 10)
             // `canInit` already matched on the request's host, so both unwraps
             // below are structurally unreachable. Fail the request rather than
             // force-unwrap: a broken assumption then surfaces as a failed
@@ -112,6 +124,21 @@ struct MixpanelCapturePipelineTests {
                 data.append(buffer, count: read)
             }
             return data
+        }
+
+        /// Holds the next request whose body contains `token` unanswered until
+        /// the returned semaphore is signalled (or 10 s pass), so a test can act
+        /// while an upload is in flight.
+        static func holdNextRequest(token: String) -> DispatchSemaphore {
+            let release = DispatchSemaphore(value: 0)
+            hold.withLock { $0 = (Data(token.utf8), release) }
+            return release
+        }
+
+        /// Number of captured requests, on any path, whose body contains `token`.
+        static func requestCount(token: String) -> Int {
+            let needle = Data(token.utf8)
+            return captured.withLock { $0.filter { $0.body.range(of: needle) != nil }.count }
         }
 
         /// All top-level JSON objects captured on `/track/` requests belonging
@@ -434,6 +461,183 @@ struct MixpanelCapturePipelineTests {
         await firstLaunch.optOutTracking()
         await firstLaunch.reset()
         await firstLaunch.flush()
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name)
+        #expect(await secondLaunch.hasOptedOutTracking())
+    }
+
+    // MARK: - Consent withdrawal
+
+    private struct PluginState: Sendable, Equatable {
+        var analytics = AnalyticsState()
+    }
+
+    private enum PluginAction: Sendable, Equatable {
+        case analytics(AnalyticsAction)
+    }
+
+    /// The Swidux plugin wired to `service` the way the docs recommend.
+    @MainActor
+    private static func makePlugin(
+        service: MixpanelAnalyticsService
+    ) -> AnalyticsPlugin<PluginState, PluginAction> {
+        AnalyticsPlugin(
+            state: \.analytics,
+            action: PluginAction.analytics,
+            extractAction: { if case .analytics(let a) = $0 { a } else { nil } },
+            service: service,
+            onConsentChange: { await service.setOptedOut($0) }
+        )
+    }
+
+    /// Waits until a request carrying `token` has been captured.
+    private static func waitForRequest(token: String) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while MixpanelCaptureURLProtocol.requestCount(token: token) == 0 {
+            try #require(ContinuousClock.now < deadline, "no request arrived")
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    /// Withdrawing consent through the plugin's hook, followed by the reset
+    /// the plugin issues, must send nothing that was queued: events, the
+    /// profile update, and the SDK's own `$delete`. Repeating the opt-out
+    /// changes nothing, and the next user who consents starts clean.
+    @Test @MainActor func consentWithdrawalDiscardsTheQueue() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        let plugin = Self.makePlugin(service: service)
+        var state = PluginState()
+        let alice = "alice-\(UUID().uuidString)"
+        let bob = "bob-\(UUID().uuidString)"
+
+        await service.identify(userID: alice, properties: ["plan": .string("pro")])
+        for index in 0..<120 {
+            await service.track(AnalyticsEvent("queued", ["index": .int(index)]))
+        }
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(true)))
+        await plugin.flush()
+
+        #expect(await service.hasOptedOutTracking())
+        #expect(MixpanelCaptureURLProtocol.requestCount(token: token) == 0)
+
+        _ = plugin.reduce(state: &state, action: .analytics(.setOptedOut(false)))
+        _ = plugin.reduce(
+            state: &state,
+            action: .analytics(.identify(userID: bob, properties: ["plan": .string("free")]))
+        )
+        _ = plugin.reduce(state: &state, action: .analytics(.track(AnalyticsEvent("after-consent"))))
+        await plugin.flush()
+
+        let after = try #require(Self.properties(ofEvent: "after-consent", token: token).first)
+        #expect(after["distinct_id"] as? String == bob)
+        #expect(Self.properties(ofEvent: "queued", token: token).isEmpty)
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(!engage.contains { $0["$delete"] != nil })
+        #expect(!engage.contains { $0["$distinct_id"] as? String == alice })
+        #expect(engage.contains { ($0["$set"] as? [String: Any])?["plan"] as? String == "free" })
+    }
+
+    /// The discarded queue is deleted, not held back: after a relaunch, an
+    /// opt-in made through the SDK itself (which, unlike the adapter's, keeps
+    /// whatever is still queued) finds nothing from before the withdrawal.
+    @Test func withdrawnQueueIsGoneAfterRelaunch() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name)
+        await firstLaunch.identify(userID: "alice-\(UUID().uuidString)", properties: ["plan": .string("pro")])
+        for index in 0..<60 {
+            await firstLaunch.track(AnalyticsEvent("queued", ["index": .int(index)]))
+        }
+        await firstLaunch.optOutTracking()
+        await firstLaunch.optOutTracking()
+        await firstLaunch.reset()
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name)
+        #expect(await secondLaunch.hasOptedOutTracking())
+
+        let instance = try #require(Mixpanel.getInstance(name: name))
+        instance.optInTracking()
+        while instance.hasOptedOutTracking() {
+            await Task.yield()
+        }
+        instance.track(event: "after-relaunch")
+        await withCheckedContinuation { continuation in
+            instance.flush(performFullFlush: true) { continuation.resume() }
+        }
+
+        #expect(!Self.properties(ofEvent: "after-relaunch", token: token).isEmpty)
+        #expect(Self.properties(ofEvent: "queued", token: token).isEmpty)
+        #expect(MixpanelCaptureURLProtocol.engagePayloads(token: token).isEmpty)
+    }
+
+    /// Measures the in-flight boundary. Opting out returns while an upload is
+    /// still waiting for the server. The SDK checks consent only as a flush
+    /// starts and between its events and People queues, so the flush already
+    /// sending events finishes every event it had read (all 120 here, in
+    /// three requests), while the People queue it had read is never sent. If
+    /// the SDK changes this, update the in-flight note in the docs.
+    @Test func optOutDoesNotWaitForAnUploadInFlight() async throws {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        await service.identify(userID: "alice-\(UUID().uuidString)", properties: ["plan": .string("pro")])
+        for index in 0..<120 {
+            await service.track(AnalyticsEvent("bulk", ["index": .int(index)]))
+        }
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let flushing = Task { await service.flush() }
+        try await Self.waitForRequest(token: token)
+
+        await service.optOutTracking()
+        // The first batch is still unanswered, so nothing else has gone out.
+        #expect(MixpanelCaptureURLProtocol.requestCount(token: token) == 1)
+
+        release.signal()
+        await flushing.value
+        #expect(Self.properties(ofEvent: "bulk", token: token).count == 120)
+        #expect(MixpanelCaptureURLProtocol.engagePayloads(token: token).isEmpty)
+
+        // Nothing is sent a second time once consent returns.
+        await service.optInTracking()
+        await service.track(AnalyticsEvent("after-consent"))
+        await service.flush()
+        #expect(!Self.properties(ofEvent: "after-consent", token: token).isEmpty)
+        #expect(Self.properties(ofEvent: "bulk", token: token).count == 120)
+    }
+
+    /// Ordinary sign-out still sends what the user recorded before it.
+    @Test func signOutStillSendsTheQueue() async {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        await service.identify(userID: "alice-\(UUID().uuidString)", properties: ["plan": .string("pro")])
+        await service.track(AnalyticsEvent("before-sign-out"))
+        await service.reset()
+
+        #expect(Self.properties(ofEvent: "before-sign-out", token: token).count == 1)
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(engage.contains { ($0["$set"] as? [String: Any])?["plan"] as? String == "pro" })
+    }
+
+    /// The plugin runs consent changes apart from other service calls, so an
+    /// opt-out can finish while a sign-out is still uploading. The sign-out's
+    /// SDK `reset()` then runs after the opt-out and erases its persisted
+    /// flag, and the user was tracked again from the next launch.
+    @Test func optOutDuringSignOutUploadSurvivesRelaunch() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name)
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let signingOut = Task { await firstLaunch.reset() }
+        try await Self.waitForRequest(token: token)
+
+        await firstLaunch.optOutTracking()
+        release.signal()
+        await signingOut.value
+        #expect(await firstLaunch.hasOptedOutTracking())
 
         Mixpanel.removeInstance(name: name)
         let secondLaunch = Self.makeService(token: token, instanceName: name)
