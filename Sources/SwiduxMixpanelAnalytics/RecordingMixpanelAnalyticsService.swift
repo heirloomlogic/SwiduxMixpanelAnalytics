@@ -17,18 +17,11 @@ import SwiduxAnalytics
 /// Opting in or out also records `.setOptedOut(_:)` in `recorder.calls`, so
 /// one ordered log shows consent changes next to the service calls. Wire
 /// ``setOptedOut(_:)`` as the plugin's `onConsentChange` hook exactly as for
-/// the real service:
-///
-/// ```swift
-/// let service = RecordingMixpanelAnalyticsService()
-/// // AnalyticsPlugin(..., service: service,
-/// //     onConsentChange: { await service.setOptedOut($0) })
-/// #expect(await service.recorder.calls == [.setOptedOut(true), .reset, .flush])
-/// ```
+/// the real service.
 ///
 /// The recorder keeps every call, including ones the real service would
-/// drop while opted out. Assert consent through ``optedOut`` or the
-/// `.setOptedOut` entries, not the absence of events.
+/// drop while opted out. Assert consent through ``hasOptedOutTracking()`` or
+/// the `.setOptedOut` entries, not the absence of events.
 ///
 /// > Warning: The recorder's log grows without limit, so this is not a
 /// > production service. `RecordingAnalyticsService` logs a fault at init
@@ -50,13 +43,11 @@ public actor RecordingMixpanelAnalyticsService: AnalyticsService {
 
     /// Records every `AnalyticsService` call and every consent change, in
     /// arrival order.
-    public nonisolated let recorder: RecordingAnalyticsService
+    public let recorder = RecordingAnalyticsService()
 
     /// Every ``optInTracking(distinctID:properties:)`` call, in order.
     public private(set) var optInCalls: [OptInCall] = []
-    /// The opt-out state set by the last consent call, also returned by
-    /// ``hasOptedOutTracking()``.
-    public private(set) var optedOut: Bool
+    private var optedOut: Bool
     /// The last value passed to ``setLoggingEnabled(_:)``, or `nil`.
     public private(set) var loggingEnabled: Bool?
     /// The last value passed to ``setUseIPAddressForGeoLocation(_:)``, or `nil`.
@@ -64,13 +55,9 @@ public actor RecordingMixpanelAnalyticsService: AnalyticsService {
 
     /// Creates a recording service.
     ///
-    /// - Parameters:
-    ///   - recorder: Where the service calls and consent changes are
-    ///     recorded. Pass one in to share it with other test code.
-    ///   - optedOut: The initial opt-out state, standing in for the real
-    ///     service's `optOutTrackingByDefault`. Defaults to `false`.
-    public init(recorder: RecordingAnalyticsService = RecordingAnalyticsService(), optedOut: Bool = false) {
-        self.recorder = recorder
+    /// - Parameter optedOut: The initial opt-out state, standing in for the
+    ///   real service's `optOutTrackingByDefault`. Defaults to `false`.
+    public init(optedOut: Bool = false) {
         self.optedOut = optedOut
     }
 
@@ -109,14 +96,14 @@ public actor RecordingMixpanelAnalyticsService: AnalyticsService {
         }
     }
 
-    /// Sets ``optedOut`` and records `.setOptedOut(true)` in ``recorder``.
+    /// Opts out and records `.setOptedOut(true)` in ``recorder``.
     public func optOutTracking() async {
         optedOut = true
         await recorder.setOptedOut(true)
     }
 
-    /// Appends to ``optInCalls``, clears ``optedOut``, and records
-    /// `.setOptedOut(false)` in ``recorder``.
+    /// Appends to ``optInCalls``, opts in, and records `.setOptedOut(false)`
+    /// in ``recorder``.
     public func optInTracking(
         distinctID: String? = nil,
         properties: [String: AnalyticsValue]? = nil
@@ -126,7 +113,8 @@ public actor RecordingMixpanelAnalyticsService: AnalyticsService {
         await recorder.setOptedOut(false)
     }
 
-    /// Returns ``optedOut``.
+    /// Returns the state set by the last opt-in or opt-out, or the `optedOut`
+    /// passed to init if neither has been called.
     public func hasOptedOutTracking() async -> Bool {
         optedOut
     }

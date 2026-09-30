@@ -81,7 +81,7 @@ func optOutStopsMixpanelBeforeReset() async {
     await store.analyticsPlugin.flush()
 
     #expect(await service.recorder.calls == [.setOptedOut(true), .reset, .flush])
-    #expect(await service.optedOut)
+    #expect(await service.hasOptedOutTracking())
 }
 ```
 

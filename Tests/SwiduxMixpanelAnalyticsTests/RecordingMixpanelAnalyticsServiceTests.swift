@@ -27,15 +27,6 @@ struct RecordingMixpanelAnalyticsServiceTests {
             ])
     }
 
-    @Test func recordsIntoASuppliedRecorder() async {
-        let recorder = RecordingAnalyticsService()
-        let service = RecordingMixpanelAnalyticsService(recorder: recorder)
-        await service.track(AnalyticsEvent("e"))
-        await service.optOutTracking()
-
-        #expect(await recorder.calls == [.track(AnalyticsEvent("e")), .setOptedOut(true)])
-    }
-
     @Test func consentChangesJoinTheOrderedLog() async {
         let service = RecordingMixpanelAnalyticsService()
         await service.track(AnalyticsEvent("before"))
@@ -60,15 +51,12 @@ struct RecordingMixpanelAnalyticsServiceTests {
 
     @Test func optOutAndOptInTrackTheState() async {
         let service = RecordingMixpanelAnalyticsService()
-        #expect(await service.optedOut == false)
         #expect(await service.hasOptedOutTracking() == false)
 
         await service.optOutTracking()
-        #expect(await service.optedOut)
         #expect(await service.hasOptedOutTracking())
 
         await service.optInTracking()
-        #expect(await service.optedOut == false)
         #expect(await service.hasOptedOutTracking() == false)
     }
 

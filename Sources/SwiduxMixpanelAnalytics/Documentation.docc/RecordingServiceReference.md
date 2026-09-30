@@ -6,7 +6,7 @@ API reference for ``RecordingMixpanelAnalyticsService``, the recording stand-in 
 
 `RecordingMixpanelAnalyticsService` is an actor that conforms to `AnalyticsService`. It sends the five service calls to a `RecordingAnalyticsService` from `SwiduxAnalytics`, exposed as ``RecordingMixpanelAnalyticsService/recorder``, and records the Mixpanel-only controls itself. Assertions on `recorder` are the same ones you would write for any other provider, so they don't change if the app moves off Mixpanel.
 
-It never creates a Mixpanel instance, so previews run without a token or network. It is not a production service: the recorder's log grows without limit, and `RecordingAnalyticsService` logs a fault at init in Release builds.
+It never creates a Mixpanel instance, so previews run without a token or network. It is not a production service: the log grows without limit, and `RecordingAnalyticsService` logs a fault at init in Release builds.
 
 For usage examples, see <doc:HowToPreviewAndTest>.
 
@@ -16,9 +16,9 @@ For usage examples, see <doc:HowToPreviewAndTest>.
 
 ```swift
 public actor RecordingMixpanelAnalyticsService: AnalyticsService {
-    public init(recorder: RecordingAnalyticsService = RecordingAnalyticsService(), optedOut: Bool = false)
+    public init(optedOut: Bool = false)
 
-    public nonisolated let recorder: RecordingAnalyticsService
+    public let recorder: RecordingAnalyticsService
 
     public func setOptedOut(_ optedOut: Bool) async
     public func optOutTracking() async
@@ -28,7 +28,6 @@ public actor RecordingMixpanelAnalyticsService: AnalyticsService {
     public func setUseIPAddressForGeoLocation(_ enabled: Bool) async
 
     public private(set) var optInCalls: [OptInCall]
-    public private(set) var optedOut: Bool
     public private(set) var loggingEnabled: Bool?
     public private(set) var useIPAddressForGeoLocation: Bool?
 
@@ -42,9 +41,9 @@ public actor RecordingMixpanelAnalyticsService: AnalyticsService {
 
 #### Recorded state
 
-- `recorder.calls` has every `track`, `identify`, `alias`, `reset`, and `flush` call, plus a `.setOptedOut(_:)` entry for each opt-in and opt-out, in arrival order. `recorder` also offers `trackedEvents`, `identifyCalls`, `aliasCalls`, `resetCount`, and `flushCount`. See Swidux's [Plugin Analytics Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/pluginanalyticsreference).
+- `recorder.calls` has every `track`, `identify`, `alias`, `reset`, and `flush` call, plus a `.setOptedOut(_:)` entry for each opt-in and opt-out, in arrival order. The recorder's other properties are in Swidux's [Plugin Analytics Reference](https://heirloomlogic.github.io/Swidux/documentation/swidux/pluginanalyticsreference).
 - `optInCalls` has the `(distinctID, properties)` pair from every `optInTracking(distinctID:properties:)` call.
-- `optedOut` is the state set by the last opt-in or opt-out, and is what `hasOptedOutTracking()` returns.
+- `hasOptedOutTracking()` returns the state set by the last opt-in or opt-out.
 - `loggingEnabled` is the last value passed to `setLoggingEnabled(_:)`, or `nil` if it was never called.
 - `useIPAddressForGeoLocation` is the last value passed to `setUseIPAddressForGeoLocation(_:)`, or `nil` if it was never called.
 
@@ -58,7 +57,7 @@ All accessors are `async`, so read them with `await`. The record types have publ
 
 The service holds no buffers and adds no latency. Every call is recorded before it returns. Await the plugin's `flush()` before asserting, because the plugin queues service calls and runs them one at a time.
 
-The recorder keeps calls the real service drops: an `identify` with a blank `userID`, an `alias` with a blank `newID` (see <doc:ServiceReference>), and anything sent while opted out. Assert consent through `optedOut` or the `.setOptedOut` entries, not by the absence of events.
+The recorder keeps calls the real service drops: an `identify` with a blank `userID`, an `alias` with a blank `newID` (see <doc:ServiceReference>), and anything sent while opted out. Assert consent through `hasOptedOutTracking()` or the `.setOptedOut` entries, not by the absence of events.
 
 ## See Also
 
