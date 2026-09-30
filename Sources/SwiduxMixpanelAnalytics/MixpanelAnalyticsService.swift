@@ -169,6 +169,12 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// `properties` are set via `instance.people.set`, except those that
     /// translate to null (`.null`, NaN, infinity), which are unset.
     ///
+    /// Only the keys in `properties` touch the profile. A key left out of a
+    /// later call keeps the value already saved, and nothing is sent for it.
+    /// To delete a saved property, pass it as `.null`; for example,
+    /// `["plan": .null]` removes `plan`. A null nested inside an array or
+    /// dictionary is dropped from that value and does not delete anything.
+    ///
     /// Empty `userID`s are dropped entirely: the SDK rejects blank distinct
     /// IDs, and forwarding the people update anyway would attribute it to the
     /// previous identity. Calls made while opted out are dropped too.

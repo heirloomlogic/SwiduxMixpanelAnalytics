@@ -112,6 +112,26 @@ Projects on Mixpanel's Simplified ID Merge (check your project's Identity Merge 
 
 When `identify` moves to a different user, the adapter first sends everything queued for the previous user and waits for it — the SDK otherwise sends every queued profile update under whoever is identified at send time. Dispatching `.analytics(.reset)` on sign-out is still the right shape; it also clears super properties set at runtime (the ones passed to the initializer come back automatically).
 
+## Update and remove profile properties
+
+`identify` changes only the profile properties it is given. A property left out of a later call keeps the value Mixpanel already has, and nothing is sent for it. To delete a saved property, pass it as `.null`:
+
+```swift
+// Sets `plan` and `experiment_variant`.
+await service.identify(
+    userID: "user-1",
+    properties: ["plan": .string("pro"), "experiment_variant": .string("b")]
+)
+
+// Updates `plan`. `experiment_variant` keeps its value.
+await service.identify(userID: "user-1", properties: ["plan": .string("team")])
+
+// Deletes `experiment_variant`.
+await service.identify(userID: "user-1", properties: ["experiment_variant": .null])
+```
+
+This holds when the plugin calls `identify` for you: if you drop a key from the `userProperties` derived from state, the saved value stays. To delete it, map the key to `.null`. Only top-level values delete; a null inside an array or dictionary is just left out of that value. See <doc:ValueTranslation> for the translation rules.
+
 ## Exclude properties
 
 Strip named property keys from outgoing events and People `$set` / `$set_once` updates before the SDK stores or sends them — a construction-time guard against PII leaking through event properties:
