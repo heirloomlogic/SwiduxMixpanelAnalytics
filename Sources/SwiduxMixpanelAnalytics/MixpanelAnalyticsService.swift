@@ -29,8 +29,8 @@ import os
 /// the opt-out flag on the caller's thread. The adapter papers over the gaps
 /// that leaves: consent changes take effect before their `async` call
 /// returns, `flush()` drains the whole queue, `reset()` keeps both queued
-/// events and a withdrawn consent, and opting out deletes the queue instead
-/// of leaving it to be sent later.
+/// events and the user's consent choice, and opting out deletes the queue
+/// instead of leaving it to be sent later.
 ///
 /// The struct is `@unchecked Sendable`: `MixpanelInstance` serializes its
 /// tracking work on internal queues, and every copy of the service shares one
@@ -234,12 +234,15 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// SDK's own `reset()` sends one 50-record batch and deletes the rest.
     /// Anything the network then fails to take is discarded, as the SDK does.
     ///
-    /// While opted out this only forgets the adapter's record of the user.
-    /// Opting out has already cleared the SDK's identity and queue, and the
-    /// SDK's `reset()` would also erase the persisted opt-out — the user
-    /// would be tracked again from the next launch. If the user opts out while
-    /// this is still sending, the opt-out is written back after the SDK's
-    /// `reset()` erases it.
+    /// The SDK's `reset()` also erases the persisted consent choice, which
+    /// would put the user back on the default from the next launch. The
+    /// adapter writes the choice back: a user who opted in stays opted in,
+    /// one who opted out stays opted out, and one who never chose still
+    /// has no choice recorded. No `$opt_in` event is sent.
+    ///
+    /// While opted out this only forgets the adapter's record of the user;
+    /// opting out has already cleared the SDK's identity and queue. A consent
+    /// change made while this is sending is the one that persists.
     public func reset() async {
         await defaultOptOut?.value
         guard !instance.hasOptedOutTracking() else {
@@ -249,16 +252,16 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         // The full flush must finish first: the SDK's `reset()` flushes a
         // partial batch of its own, which would send the same records twice.
         await flush()
+        let hadConsentChoice = Self.hasPersistedConsentChoice(instanceName: instance.name)
         await resetSDK()
-        // An opt-out does not wait for the network, so one can finish while
-        // the flush above is uploading. The SDK's `reset()` then deletes the
-        // persisted flag but keeps the in-memory one, which this checks. An
-        // opt-out still queued at this point runs later and persists itself.
-        guard !instance.hasOptedOutTracking() else {
-            instance.optOutTracking()
-            await awaitPersistedOptOut()
-            return
+        // A consent change does not wait for the network, so an opt-out can
+        // finish while the flush above is uploading; the SDK's `reset()`
+        // keeps the in-memory flag, which this writes back.
+        let optedOut = instance.hasOptedOutTracking()
+        if hadConsentChoice || optedOut {
+            persistConsentChoice()
         }
+        guard !optedOut else { return }
         registerSuperProperties()
     }
 
@@ -502,9 +505,35 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
 
     /// Whether the SDK has persisted an opt-in or opt-out for `instanceName`
     /// — its `UserDefaults` suite `Mixpanel`, key
-    /// `mixpanel-<name>-OptOutStatus`. A capture test pins this.
+    /// `mixpanel-<name>-OptOutStatus`. Capture tests pin this.
     static func hasPersistedConsentChoice(instanceName: String) -> Bool {
-        UserDefaults(suiteName: "Mixpanel")?.object(forKey: "mixpanel-\(instanceName)-OptOutStatus") != nil
+        consentDefaults?.object(forKey: consentKey(instanceName)) != nil
+    }
+
+    private static var consentDefaults: UserDefaults? { UserDefaults(suiteName: "Mixpanel") }
+
+    private static func consentKey(_ instanceName: String) -> String {
+        "mixpanel-\(instanceName)-OptOutStatus"
+    }
+
+    /// Writes the SDK's in-memory consent to its persisted flag, as the SDK's
+    /// own opt-in and opt-out do — needed after a `reset()`, which deletes
+    /// the flag.
+    ///
+    /// It writes the key directly: re-applying the choice through the SDK
+    /// would record another `$opt_in` and queue behind any consent change
+    /// still pending. A change can still land while this writes: the
+    /// SDK sets its in-memory flag and then persists it, so re-reading the
+    /// flag afterwards either finds the value just written or a newer one,
+    /// which is written in turn.
+    private func persistConsentChoice() {
+        var optedOut = instance.hasOptedOutTracking()
+        while true {
+            Self.consentDefaults?.set(optedOut, forKey: Self.consentKey(instance.name))
+            let current = instance.hasOptedOutTracking()
+            guard current != optedOut else { return }
+            optedOut = current
+        }
     }
 }
 
