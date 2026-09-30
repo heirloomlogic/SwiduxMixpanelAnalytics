@@ -237,12 +237,13 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// The SDK's `reset()` also erases the persisted consent choice, which
     /// would put the user back on the default from the next launch. The
     /// adapter writes the choice back: a user who opted in stays opted in,
-    /// one who opted out stays opted out, and one who never chose still
-    /// has no choice recorded. No `$opt_in` event is sent.
+    /// one who opted out stays opted out, and one who never chose is left
+    /// on the default. No `$opt_in` event is sent.
     ///
     /// While opted out this only forgets the adapter's record of the user;
-    /// opting out has already cleared the SDK's identity and queue. A consent
-    /// change made while this is sending is the one that persists.
+    /// opting out has already cleared the SDK's identity and queue. If
+    /// consent changes through this service while the queue is being sent,
+    /// the latest choice is the one kept.
     public func reset() async {
         await defaultOptOut?.value
         guard !instance.hasOptedOutTracking() else {
@@ -252,7 +253,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         // The full flush must finish first: the SDK's `reset()` flushes a
         // partial batch of its own, which would send the same records twice.
         await flush()
-        let hadConsentChoice = Self.hasPersistedConsentChoice(instanceName: instance.name)
+        let hadConsentChoice = hasConsentChoice()
         await resetSDK()
         // A consent change does not wait for the network, so an opt-out can
         // finish while the flush above is uploading; the SDK's `reset()`
@@ -329,6 +330,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     public func optOutTracking() async {
         await defaultOptOut?.value
         guard !instance.hasOptedOutTracking() else { return }
+        session.noteConsentChoice()
         instance.optOutTracking()
         // Once the flag is set, the SDK has queued its `$delete` and starts no
         // more uploads, so its `reset()` below cannot send a batch first. A
@@ -376,6 +378,7 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         // opt-out on an identified install, or a direct SDK call) leaves an
         // unattributed `$delete` that the next identify would adopt. Identity
         // is already anonymous, so this loses no one's data.
+        session.noteConsentChoice()
         await resetSDK()
         if let distinctID {
             _ = session.identify(distinctID)
@@ -510,6 +513,19 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
         consentDefaults?.object(forKey: consentKey(instanceName)) != nil
     }
 
+    /// Whether the user has opted in or out. The SDK tracks this in an
+    /// internal flag that is never cleared once set; this mirrors it.
+    ///
+    /// The persisted flag alone is not enough. A consent change deletes it
+    /// with the SDK's `reset()` and writes it again a moment later, so a read
+    /// in between would miss a choice that is being made.
+    private func hasConsentChoice() -> Bool {
+        if Self.hasPersistedConsentChoice(instanceName: instance.name) {
+            session.noteConsentChoice()
+        }
+        return session.hasConsentChoice
+    }
+
     private static var consentDefaults: UserDefaults? { UserDefaults(suiteName: "Mixpanel") }
 
     private static func consentKey(_ instanceName: String) -> String {
@@ -541,6 +557,7 @@ extension MixpanelAnalyticsService {
     /// Adapter-side state shared by every copy of the service.
     final class Session: Sendable {
         private let identifiedUserID = Mutex<String?>(nil)
+        private let consentChoice = Mutex(false)
 
         /// Records `userID` as identified; `true` when that is a change from
         /// the user identified before (or nobody known).
@@ -553,6 +570,15 @@ extension MixpanelAnalyticsService {
 
         func forgetUser() {
             identifiedUserID.withLock { $0 = nil }
+        }
+
+        /// Records that the user has opted in or out; it is never cleared.
+        func noteConsentChoice() {
+            consentChoice.withLock { $0 = true }
+        }
+
+        var hasConsentChoice: Bool {
+            consentChoice.withLock { $0 }
         }
     }
 

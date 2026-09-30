@@ -526,6 +526,36 @@ struct MixpanelCapturePipelineTests {
         #expect(!(await secondLaunch.hasOptedOutTracking()))
     }
 
+    /// An opt-in erases the persisted flag with its own SDK `reset()` and
+    /// writes it again a moment later. A sign-out upload that finishes in
+    /// between must still find that the user has made a choice. The test
+    /// removes the flag itself to hold that moment open.
+    @Test func optInWhosePersistedFlagIsPendingSurvivesSignOut() async throws {
+        let token = UUID().uuidString
+        let name = "capture-\(UUID().uuidString)"
+        let firstLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        await firstLaunch.optInTracking()
+        await firstLaunch.track(AnalyticsEvent("before-sign-out"))
+        let release = MixpanelCaptureURLProtocol.holdNextRequest(token: token)
+        let signingOut = Task { await firstLaunch.reset() }
+        try await Self.waitForRequest(token: token)
+
+        await firstLaunch.optOutTracking()
+        await firstLaunch.optInTracking()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while !MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name) {
+            try #require(ContinuousClock.now < deadline, "the opt-in was never persisted")
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        UserDefaults(suiteName: "Mixpanel")?.removeObject(forKey: "mixpanel-\(name)-OptOutStatus")
+        release.signal()
+        await signingOut.value
+
+        Mixpanel.removeInstance(name: name)
+        let secondLaunch = Self.makeService(token: token, instanceName: name, optOutTrackingByDefault: true)
+        #expect(!(await secondLaunch.hasOptedOutTracking()))
+    }
+
     // MARK: - Consent withdrawal
 
     private struct PluginState: Sendable, Equatable {
