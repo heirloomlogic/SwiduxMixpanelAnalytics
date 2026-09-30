@@ -63,7 +63,7 @@ public init(token: String, ...)
 
 Builds a `MixpanelOptions` and calls `Mixpanel.initialize(options:)` internally, retaining the resulting instance. Parameters mirror `MixpanelOptions` — including its `useGzipCompression: true` default; `superProperties` takes `[String: AnalyticsValue]` so the app does not need to reference `MixpanelType`, and `deviceIdProvider` supplies a custom stable device ID (see <doc:HowToImplementService> for the contract: cached value only, no inline I/O).
 
-`MixpanelOptions` has no settings for logging or geolocation by IP, so the initializer sets `loggingEnabled` and `useIPAddressForGeoLocation` on the instance straight after creating it, and only when they differ from the defaults. The SDK's logger is shared by every Mixpanel instance in the process: `loggingEnabled: true` turns logging on for all of them, and `false` leaves it as it is.
+`MixpanelOptions` has no settings for logging or geolocation by IP, so the initializer sets `loggingEnabled` and `useIPAddressForGeoLocation` on the instance right after `Mixpanel.initialize`, and only when they differ from the defaults. The SDK's logger is shared by every Mixpanel instance in the process: `loggingEnabled: true` turns logging on for all of them, and `false` leaves it as it is.
 
 The Mixpanel SDK keys instances by `instanceName` (falling back to `token`); constructing a second service with the same name returns the existing SDK instance and silently ignores the new options, apart from a `loggingEnabled: true` or `useIPAddressForGeoLocation: false`, which still apply to it. Services for different projects can safely be built concurrently: the adapter looks its instance up by name, working around an SDK race that could otherwise hand one service the other's instance. `superProperties` are re-applied after `reset()` and after opting back in, since the SDK drops them at both points and ignores them while opted out.
 
@@ -113,9 +113,9 @@ Forwards to `MixpanelInstance.optInTracking(distinctId:properties:)` and returns
 
 #### `isOptedOut: Bool`
 
-Whether the user is opted out, answered synchronously so it can seed `AnalyticsState(isOptedOut:)` when the store is built. At launch it reports the choice the SDK loaded from storage. With `optOutTrackingByDefault` and no stored choice it is `true` as soon as the initializer returns, although the SDK only applies that default on its queue a moment later and reads as opted in until then.
+Whether the user is opted out, answered synchronously so it can seed `AnalyticsState(isOptedOut:)` when the store is built. At launch it reports the stored choice if there is one, and otherwise the default. With `optOutTrackingByDefault` and no stored choice it is `true` as soon as the initializer returns, although the SDK only applies that default on its queue a moment later and reads as opted in until then.
 
-A change made through `setOptedOut(_:)`, `optOutTracking()`, or `optInTracking(distinctID:properties:)` shows by the time the call returns; read while the change is still in progress, it gives the old value or the new one. `reset()` does not change it. With `init(instance:)` it reads only `MixpanelInstance.hasOptedOutTracking()`, so it shows opted in until the SDK has applied its `optOutTrackingByDefault`.
+A change made through `setOptedOut(_:)`, `optOutTracking()`, or `optInTracking(distinctID:properties:)` shows by the time the call returns, unless another change has landed after it; read while a change is still in progress, it gives the old value or the new one. `reset()` does not change it. With `init(instance:)` it reads only `MixpanelInstance.hasOptedOutTracking()`, so it shows opted in until the SDK has applied its `optOutTrackingByDefault`.
 
 ## See Also
 

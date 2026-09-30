@@ -430,15 +430,16 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// can seed the plugin's `AnalyticsState(isOptedOut:)` when the store is
     /// built.
     ///
-    /// At launch it reports the choice the SDK loaded from storage. With
-    /// `optOutTrackingByDefault` and no stored choice it is `true` as soon as
-    /// the initializer returns, even though the SDK applies that default on
-    /// its own queue a moment later.
+    /// At launch it reports the stored choice if there is one, and otherwise
+    /// the default. With `optOutTrackingByDefault` and no stored choice it is
+    /// `true` as soon as the initializer returns, even though the SDK applies
+    /// that default on its own queue a moment later.
     ///
     /// A change made through ``setOptedOut(_:)``, ``optOutTracking()``, or
     /// ``optInTracking(distinctID:properties:)`` shows here by the time that
-    /// call returns. Read while the change is still in progress, it gives
-    /// the old value or the new one. ``reset()`` does not change it.
+    /// call returns, unless another change has landed after it. Read while
+    /// a change is still in progress, it gives the old value or the new one.
+    /// ``reset()`` does not change it.
     ///
     /// With ``init(instance:)`` it reads only the SDK's flag, which shows
     /// the user as opted in until the SDK has applied its
