@@ -187,6 +187,7 @@ struct MixpanelCapturePipelineTests {
         instanceName: String = "capture-\(UUID().uuidString)",
         excludeProperties: Set<String> = [],
         optOutTrackingByDefault: Bool = false,
+        deviceIdProvider: (@Sendable () -> String?)? = nil,
         superProperties: [String: AnalyticsValue]? = nil
     ) -> MixpanelAnalyticsService {
         _ = MixpanelCaptureURLProtocol.registerOnce
@@ -196,6 +197,7 @@ struct MixpanelCapturePipelineTests {
             flushInterval: 3600,
             instanceName: instanceName,
             optOutTrackingByDefault: optOutTrackingByDefault,
+            deviceIdProvider: deviceIdProvider,
             superProperties: superProperties,
             serverURL: "https://\(MixpanelCaptureURLProtocol.host)",
             useGzipCompression: false,
@@ -370,7 +372,6 @@ struct MixpanelCapturePipelineTests {
     /// holds the SDK's lock: a read of the SDK's flag would wait for the
     /// release and fail the check below.
     @Test func isOptedOutCoversTheDefaultStillQueued() async throws {
-        _ = MixpanelCaptureURLProtocol.registerOnce
         let hold = QueuedOptOutHold()
         let service = hold.makeService()
         try await hold.waitUntilHeld()
@@ -456,13 +457,10 @@ struct MixpanelCapturePipelineTests {
         /// Synchronous, so the whole initializer runs on the recorded thread.
         func makeService() -> MixpanelAnalyticsService {
             state.withLock { $0.builder = pthread_self() }
-            return MixpanelAnalyticsService(
+            return MixpanelCapturePipelineTests.makeService(
                 token: UUID().uuidString,
-                flushInterval: 3600,
-                instanceName: "capture-\(UUID().uuidString)",
                 optOutTrackingByDefault: true,
-                deviceIdProvider: { self.deviceID() },
-                serverURL: "https://\(MixpanelCaptureURLProtocol.host)"
+                deviceIdProvider: { self.deviceID() }
             )
         }
 
@@ -480,10 +478,8 @@ struct MixpanelCapturePipelineTests {
         }
 
         func waitUntilHeld() async throws {
-            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-            while !state.withLock({ $0.held }) {
-                try #require(ContinuousClock.now < deadline, "the SDK never ran its default opt-out")
-                try await Task.sleep(for: .milliseconds(1))
+            try await MixpanelCapturePipelineTests.waitUntil("the SDK never ran its default opt-out") {
+                state.withLock { $0.held }
             }
         }
 
@@ -671,10 +667,8 @@ struct MixpanelCapturePipelineTests {
 
         await firstLaunch.optOutTracking()
         await firstLaunch.optInTracking()
-        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-        while !MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name) {
-            try #require(ContinuousClock.now < deadline, "the opt-in was never persisted")
-            try await Task.sleep(for: .milliseconds(1))
+        try await Self.waitUntil("the opt-in was never persisted") {
+            MixpanelAnalyticsService.hasPersistedConsentChoice(instanceName: name)
         }
         UserDefaults(suiteName: "Mixpanel")?.removeObject(forKey: "mixpanel-\(name)-OptOutStatus")
         release.signal()
@@ -711,10 +705,16 @@ struct MixpanelCapturePipelineTests {
 
     /// Waits until a request carrying `token` has been captured.
     private static func waitForRequest(token: String) async throws {
+        try await waitUntil("no request arrived") { MixpanelCaptureURLProtocol.requestCount(token: token) > 0 }
+    }
+
+    /// Polls `condition` every millisecond, failing the test with `message`
+    /// after 10 seconds.
+    private static func waitUntil(_ message: Comment, _ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-        while MixpanelCaptureURLProtocol.requestCount(token: token) == 0 {
-            try #require(ContinuousClock.now < deadline, "no request arrived")
-            try await Task.sleep(for: .milliseconds(5))
+        while !condition() {
+            try #require(ContinuousClock.now < deadline, message)
+            try await Task.sleep(for: .milliseconds(1))
         }
     }
 

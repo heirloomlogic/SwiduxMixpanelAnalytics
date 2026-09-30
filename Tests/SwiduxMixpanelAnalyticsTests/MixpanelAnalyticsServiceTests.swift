@@ -86,7 +86,8 @@ struct MixpanelAnalyticsServiceTests {
     }
 
     /// The SDK has no options for logging or geolocation by IP, so the
-    /// initializer sets them on the instance.
+    /// initializer sets them on the instance. The defaults write nothing, so a
+    /// second service for the same instance does not undo them.
     @Test func loggingAndGeoAreSetAtInit() {
         _ = MixpanelCapturePipelineTests.MixpanelCaptureURLProtocol.registerOnce
         let name = "smoke-\(UUID().uuidString)"
@@ -97,26 +98,12 @@ struct MixpanelAnalyticsServiceTests {
             loggingEnabled: true,
             useIPAddressForGeoLocation: false
         )
+        _ = MixpanelAnalyticsService(token: "test-token", instanceName: name, serverURL: Self.serverURL)
         let instance = Mixpanel.getInstance(name: name)
         #expect(instance?.loggingEnabled == true)
         #expect(instance?.useIPAddressForGeoLocation == false)
         // The SDK's logger is process-wide; switch it back off.
         instance?.loggingEnabled = false
-    }
-
-    /// The defaults write nothing, so building a second service for the same
-    /// instance does not undo the first one's settings.
-    @Test func defaultInitLeavesAnExistingInstanceAlone() {
-        _ = MixpanelCapturePipelineTests.MixpanelCaptureURLProtocol.registerOnce
-        let name = "smoke-\(UUID().uuidString)"
-        _ = MixpanelAnalyticsService(
-            token: "test-token",
-            instanceName: name,
-            serverURL: Self.serverURL,
-            useIPAddressForGeoLocation: false
-        )
-        _ = MixpanelAnalyticsService(token: "test-token", instanceName: name, serverURL: Self.serverURL)
-        #expect(Mixpanel.getInstance(name: name)?.useIPAddressForGeoLocation == false)
     }
 
     /// The SDK consults `deviceIdProvider` only when no persisted identity
