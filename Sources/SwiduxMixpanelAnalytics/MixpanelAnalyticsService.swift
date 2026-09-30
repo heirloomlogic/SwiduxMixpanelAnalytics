@@ -64,15 +64,19 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     ///
     /// > Important: The Mixpanel SDK keys instances by `instanceName` (falling
     /// > back to `token`). Constructing a second service with the same name
-    /// > returns the *existing* SDK instance and silently ignores the new
-    /// > options, with two exceptions. A `loggingEnabled: true` or
-    /// > `useIPAddressForGeoLocation: false` still applies to it. And with
-    /// > `optOutTrackingByDefault: true` and no stored consent choice, the new
-    /// > service reports ``isOptedOut`` as `true`, even if the instance is
-    /// > opted in, until a flush it starts on the instance completes; its
-    /// > consent, `identify`, `alias`, and `reset` calls wait for that flush.
-    /// > Construct the service once, where the store is configured, rather
-    /// > than per view or per preview.
+    /// > returns the *existing* SDK instance, and none of the options passed to
+    /// > `Mixpanel.initialize` take effect. The new service is still a separate
+    /// > adapter: settings the adapter applies itself do reach the shared
+    /// > instance, and the state it keeps is its own, not shared with the first
+    /// > service. For example, it writes `loggingEnabled: true` and
+    /// > `useIPAddressForGeoLocation: false` to the instance. After its
+    /// > `reset()` or opt-in, the instance carries this service's
+    /// > `superProperties`, or none. With `optOutTrackingByDefault: true` and
+    /// > no stored consent choice, it reports ``isOptedOut`` as `true`, even if
+    /// > the instance is opted in, until a flush it starts on the instance
+    /// > completes, and its consent, `identify`, `alias`, and `reset()` calls
+    /// > wait for that flush. Construct the service once, where the store is
+    /// > configured, rather than per view or per preview.
     ///
     /// - Parameters:
     ///   - token: The Mixpanel project token.
