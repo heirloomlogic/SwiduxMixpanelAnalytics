@@ -872,17 +872,24 @@ struct MixpanelCapturePipelineTests {
         #expect(unset == ["coupon"])
     }
 
-    /// A property left out of a later `identify` keeps its saved value:
-    /// nothing is unset for it and it is not sent again. Only an explicit
-    /// `.null` deletes it.
+    /// A property left out of a later `identify` is not sent, so its saved
+    /// value stays; only an explicit `.null` unsets it. A dictionary is sent
+    /// whole, with its nested nulls dropped, and is not unset. The SDK adds
+    /// its own properties to every `$set`, but not to an `$unset`.
     @Test func omittedProfilePropertiesAreKeptAndNullDeletes() async {
         let token = UUID().uuidString
         let service = Self.makeService(token: token)
         let userID = "u-\(UUID().uuidString)"
         await service.identify(
-            userID: userID, properties: ["a": .string("x"), "b": .string("y")])
+            userID: userID,
+            properties: [
+                "a": .string("x"), "b": .string("y"),
+                "prefs": .dict(["theme": .string("dark")]),
+            ])
         await service.flush()
-        await service.identify(userID: userID, properties: ["a": .string("z")])
+        await service.identify(
+            userID: userID,
+            properties: ["a": .string("z"), "prefs": .dict(["theme": .null])])
         await service.flush()
 
         let omitted = MixpanelCaptureURLProtocol.engagePayloads(token: token)
@@ -892,13 +899,16 @@ struct MixpanelCapturePipelineTests {
         #expect(sets.first?["b"] as? String == "y")
         #expect(sets.last?["a"] as? String == "z")
         #expect(sets.last?["b"] == nil)
+        #expect((sets.last?["prefs"] as? [String: Any])?.isEmpty == true)
+        #expect(sets.last?.keys.filter { !$0.hasPrefix("$") }.sorted() == ["a", "prefs"])
+        #expect(sets.last?["$swift_lib_version"] != nil)
         #expect(omitted.allSatisfy { $0["$unset"] == nil })
 
         await service.identify(userID: userID, properties: ["b": .null])
         await service.flush()
 
-        let unsets = MixpanelCaptureURLProtocol.engagePayloads(token: token)
-            .compactMap { $0["$unset"] as? [String] }
-        #expect(unsets == [["b"]])
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(engage.compactMap { $0["$set"] }.count == 2)
+        #expect(engage.compactMap { $0["$unset"] as? [String] } == [["b"]])
     }
 }

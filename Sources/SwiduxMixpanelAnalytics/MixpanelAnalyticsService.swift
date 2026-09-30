@@ -169,11 +169,19 @@ public struct MixpanelAnalyticsService: AnalyticsService, @unchecked Sendable {
     /// `properties` are set via `instance.people.set`, except those that
     /// translate to null (`.null`, NaN, infinity), which are unset.
     ///
-    /// Only the keys in `properties` touch the profile. A key left out of a
-    /// later call keeps the value already saved, and nothing is sent for it.
+    /// A key left out of a later call is not sent, so its saved value stays.
     /// To delete a saved property, pass it as `.null`; for example,
-    /// `["plan": .null]` removes `plan`. A null nested inside an array or
-    /// dictionary is dropped from that value and does not delete anything.
+    /// `["plan": .null]` unsets `plan`. Each value is sent whole and replaces
+    /// the saved one. A null nested inside an array or dictionary is dropped
+    /// before sending, so it deletes nothing by itself, but the rest of that
+    /// value replaces the saved value: identifying with
+    /// `["prefs": .dict(["theme": .null])]` sends `prefs` as `{}`.
+    ///
+    /// Every `$set` also carries properties the Mixpanel SDK adds itself
+    /// (`$ios_device_model`, `$ios_version`, `$ios_lib_version`,
+    /// `$swift_lib_version`, and `$ios_app_version` / `$ios_app_release` when
+    /// the app's Info.plist has them). A call whose properties are empty or
+    /// all null sends no `$set`.
     ///
     /// Empty `userID`s are dropped entirely: the SDK rejects blank distinct
     /// IDs, and forwarding the people update anyway would attribute it to the
