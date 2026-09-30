@@ -112,6 +112,30 @@ Projects on Mixpanel's Simplified ID Merge (check your project's Identity Merge 
 
 When `identify` moves to a different user, the adapter first sends everything queued for the previous user and waits for it — the SDK otherwise sends every queued profile update under whoever is identified at send time. Dispatching `.analytics(.reset)` on sign-out is still the right shape; it also clears super properties set at runtime (the ones passed to the initializer come back automatically).
 
+## Update and remove profile properties
+
+A property left out of a later `identify` call is not sent, so the value Mixpanel already has stays. To delete a saved property, pass it as `.null`, which sends an `$unset` for that key:
+
+```swift
+// Sets `plan` and `experiment_variant`.
+await service.identify(
+    userID: "user-1",
+    properties: ["plan": .string("pro"), "experiment_variant": .string("b")]
+)
+
+// Updates `plan`. `experiment_variant` keeps its value.
+await service.identify(userID: "user-1", properties: ["plan": .string("team")])
+
+// Deletes `experiment_variant`.
+await service.identify(userID: "user-1", properties: ["experiment_variant": .null])
+```
+
+This holds when the plugin calls `identify` for you: if you drop a key from the `userProperties` derived from state, the saved value stays. To delete it, map the key to `.null`. Only a top-level `.null` deletes.
+
+Each property you pass is sent whole, and the new value replaces the saved one. A null inside an array or dictionary is dropped before sending, so it does not delete anything by itself, but the rest of that value replaces the saved value. If `prefs` is saved as `{theme: dark}` and you identify with `["prefs": .dict(["theme": .null])]`, the adapter sends `prefs` as `{}` and `theme` is gone from the saved value. To keep the other entries of a dictionary, send them again. See <doc:ValueTranslation> for the translation rules.
+
+Every `$set` the adapter sends also carries the SDK's own automatic people properties (for example `$ios_device_model` and `$swift_lib_version`), except any listed in `excludeProperties`. They are sent whenever a call has at least one property that is not null. A call whose properties are empty or all null sends no `$set`.
+
 ## Exclude properties
 
 Strip named property keys from outgoing events and People `$set` / `$set_once` updates before the SDK stores or sends them — a construction-time guard against PII leaking through event properties:

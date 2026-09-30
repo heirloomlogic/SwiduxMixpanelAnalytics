@@ -246,10 +246,10 @@ struct MixpanelCapturePipelineTests {
     }
 
     /// Excluded keys must also be stripped from People `$set` updates that ride
-    /// out on `/engage/`.
+    /// out on `/engage/`, including the properties the SDK adds itself.
     @Test func excludedPropertiesStrippedFromPeopleSet() async throws {
         let token = UUID().uuidString
-        let service = Self.makeService(token: token, excludeProperties: ["email"])
+        let service = Self.makeService(token: token, excludeProperties: ["email", "$ios_device_model"])
         await service.identify(
             userID: "u-\(UUID().uuidString)",
             properties: [
@@ -265,6 +265,8 @@ struct MixpanelCapturePipelineTests {
         let set = try #require(setPayload["$set"] as? [String: Any])
         #expect(set["tier"] != nil)
         #expect(set["email"] == nil)
+        #expect(set["$ios_device_model"] == nil)
+        #expect(set["$swift_lib_version"] != nil)
     }
 
     /// Opt-out drops events before they reach the wire; the subsequent opt-in
@@ -870,5 +872,45 @@ struct MixpanelCapturePipelineTests {
         #expect(set["coupon"] == nil)
         let unset = try #require(engage.compactMap { $0["$unset"] as? [String] }.first)
         #expect(unset == ["coupon"])
+    }
+
+    /// A property left out of a later `identify` is not sent, so its saved
+    /// value stays; only an explicit `.null` unsets it. A dictionary is sent
+    /// whole, with its nested nulls dropped, and is not unset. The SDK adds
+    /// its own properties to every `$set`, but not to an `$unset`.
+    @Test func omittedProfilePropertiesAreKeptAndNullDeletes() async {
+        let token = UUID().uuidString
+        let service = Self.makeService(token: token)
+        let userID = "u-\(UUID().uuidString)"
+        await service.identify(
+            userID: userID,
+            properties: [
+                "a": .string("x"), "b": .string("y"),
+                "prefs": .dict(["theme": .string("dark")]),
+            ])
+        await service.flush()
+        await service.identify(
+            userID: userID,
+            properties: ["a": .string("z"), "prefs": .dict(["theme": .null])])
+        await service.flush()
+
+        let omitted = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        let sets = omitted.compactMap { $0["$set"] as? [String: Any] }
+        #expect(sets.count == 2)
+        #expect(sets.first?["a"] as? String == "x")
+        #expect(sets.first?["b"] as? String == "y")
+        #expect(sets.last?["a"] as? String == "z")
+        #expect(sets.last?["b"] == nil)
+        #expect((sets.last?["prefs"] as? [String: Any])?.isEmpty == true)
+        #expect(sets.last?.keys.filter { !$0.hasPrefix("$") }.sorted() == ["a", "prefs"])
+        #expect(sets.last?["$swift_lib_version"] != nil)
+        #expect(omitted.allSatisfy { $0["$unset"] == nil })
+
+        await service.identify(userID: userID, properties: ["b": .null])
+        await service.flush()
+
+        let engage = MixpanelCaptureURLProtocol.engagePayloads(token: token)
+        #expect(engage.compactMap { $0["$set"] }.count == 2)
+        #expect(engage.compactMap { $0["$unset"] as? [String] } == [["b"]])
     }
 }
