@@ -121,5 +121,5 @@ A change made through `setOptedOut(_:)`, `optOutTracking()`, or `optInTracking(d
 
 - <doc:HowToImplementService>
 - <doc:ValueTranslation>
-- <doc:MockServiceReference>
+- <doc:RecordingServiceReference>
 - ``MixpanelAnalyticsService``

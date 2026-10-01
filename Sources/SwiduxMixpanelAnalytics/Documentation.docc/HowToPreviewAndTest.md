@@ -4,15 +4,20 @@ Drive `AnalyticsService` from SwiftUI previews and Swift Testing suites without 
 
 ## Overview
 
-`MixpanelAnalyticsService` calls into a real `MixpanelInstance`. For previews and tests, swap it for ``MockMixpanelAnalyticsService`` — an actor that records every call and exposes its history for assertions. The mock has no Mixpanel dependency and runs offline.
+`MixpanelAnalyticsService` calls into a real `MixpanelInstance`. Previews and tests use a recorder instead. There are two:
+
+- `RecordingAnalyticsService`, from `SwiduxAnalytics`, records every service call. Use it for tests that only check what the plugin sent. Those tests don't mention Mixpanel, so they stay the same if the app changes provider.
+- ``RecordingMixpanelAnalyticsService`` adds recorded versions of Mixpanel's consent controls. Use it where the code under test calls those controls.
+
+Neither needs the Mixpanel SDK at runtime or touches the network.
 
 ## In a SwiftUI preview
 
-Inject a mock-backed store and the analytics work flows without spinning up the SDK:
+Inject a recorder-backed store so the analytics work runs without the SDK:
 
 ```swift
 #Preview {
-    let store = AppStore.configured(analyticsService: MockMixpanelAnalyticsService())
+    let store = AppStore.configured(analyticsService: RecordingAnalyticsService())
     return ContentView().environment(store)
 }
 ```
@@ -21,21 +26,21 @@ This requires that `AppStore.configured` accepts an injected `AnalyticsService`.
 
 ## In a Swift Testing suite
 
-Use the mock to verify mapper behavior. Await the plugin's `flush()` to make assertions deterministic:
+Use the recorder to verify mapper behavior. Await the plugin's `flush()` so every queued call has arrived before you assert:
 
 ```swift
-import SwiduxMixpanelAnalytics
+import SwiduxAnalytics
 import Testing
 
 @Test
 func incrementMapsToCounterAdded() async {
-    let mock = MockMixpanelAnalyticsService()
-    let store = AppStore.configured(analyticsService: mock)
+    let recorder = RecordingAnalyticsService()
+    let store = AppStore.configured(analyticsService: recorder)
 
     store.send(.counter(.increment(5)))
     await store.analyticsPlugin.flush()
 
-    let events = await mock.trackedEvents
+    let events = await recorder.trackedEvents
     #expect(events.first?.name == "counter_added")
     #expect(events.first?.properties["amount"] == .int(5))
 }
@@ -43,25 +48,48 @@ func incrementMapsToCounterAdded() async {
 
 ## Asserting on identify and alias
 
-The mock records identify and alias calls in order:
+The recorder keeps identify and alias calls in order:
 
 ```swift
 @Test
 func userSignInIdentifies() async {
-    let mock = MockMixpanelAnalyticsService()
-    let store = AppStore.configured(analyticsService: mock)
+    let recorder = RecordingAnalyticsService()
+    let store = AppStore.configured(analyticsService: recorder)
 
     store.send(.auth(.signIn(userID: "user-1")))
     await store.analyticsPlugin.flush()
 
-    let calls = await mock.identifyCalls
+    let calls = await recorder.identifyCalls
     #expect(calls == [.init(userID: "user-1", properties: ["tier": .string("free")])])
 }
 ```
 
-`MockMixpanelAnalyticsService` is an actor, so its accessors are async — wrap them in `await`.
+## Asserting on consent
+
+Wire the consent hook to ``RecordingMixpanelAnalyticsService/setOptedOut(_:)``, as you would for the real service. Opt-ins and opt-outs then appear in `recorder.calls` next to the service calls, which lets you check their order:
+
+```swift
+@Test
+func optOutStopsMixpanelBeforeReset() async {
+    let service = RecordingMixpanelAnalyticsService()
+    let store = AppStore.configured(
+        analyticsService: service,
+        onConsentChange: { await service.setOptedOut($0) }
+    )
+
+    store.send(.analytics(.setOptedOut(true)))
+    await store.analyticsPlugin.flush()
+
+    #expect(await service.recorder.calls == [.setOptedOut(true), .reset, .flush])
+    #expect(service.isOptedOut)
+}
+```
+
+A test that doesn't need the Mixpanel controls can wire the hook to `RecordingAnalyticsService.setOptedOut(_:)` instead and assert the same `calls`.
+
+Both recorders are actors, so read their properties with `await`.
 
 ## See Also
 
 - <doc:GettingStarted>
-- <doc:MockServiceReference>
+- <doc:RecordingServiceReference>
