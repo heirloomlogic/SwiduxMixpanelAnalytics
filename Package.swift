@@ -14,7 +14,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/HeirloomLogic/Swidux", from: "1.10.0"),
-        .package(url: "https://github.com/mixpanel/mixpanel-swift", from: "6.7.0"),
+        .package(url: "https://github.com/mixpanel/mixpanel-swift", from: "7.0.0"),
     ],
     targets: [
         .target(
